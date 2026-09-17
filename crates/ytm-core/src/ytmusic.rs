@@ -44,7 +44,12 @@ fn classify(e: ytmapi_rs::Error) -> SourceError {
     let l = s.to_lowercase();
     if l.contains("401") || l.contains("unauthor") {
         SourceError::NotAuthenticated
-    } else if l.contains("429") || l.contains("rate") {
+    } else if l.contains("429")
+        || l.contains("rate")
+        || l.contains("automated queries")
+        || l.contains("we're sorry")
+        || (l.contains("expected value") && (l.contains("line 1") || l.contains("line: 1")))
+    {
         SourceError::RateLimited
     } else if l.contains("404") || l.contains("not found") {
         SourceError::NotFound(s)
@@ -64,6 +69,9 @@ fn parse_json<Q, O>(query: &Q, json: String) -> Result<O, SourceError>
 where
     O: ytmapi_rs::parse::ParseFrom<Q>,
 {
+    if let Some(error) = classify_raw_api_error(&json) {
+        return Err(error);
+    }
     let value: ytmapi_rs::json::Json =
         serde_json::from_str(&json).map_err(|e| SourceError::Parse(e.to_string()))?;
     ytmapi_rs::parse::ProcessedResult {
@@ -76,6 +84,14 @@ where
 }
 
 fn classify_raw_api_error(json: &str) -> Option<SourceError> {
+    let trimmed = json.trim_start();
+    if trimmed.starts_with('<')
+        || trimmed.contains("automated queries")
+        || trimmed.contains("We're sorry")
+        || trimmed.contains("we're sorry")
+    {
+        return Some(SourceError::RateLimited);
+    }
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let error = value.get("error")?;
     let code = error.get("code").and_then(serde_json::Value::as_i64);
@@ -230,6 +246,9 @@ macro_rules! impl_feed {
                     .raw_json_query::<GetHomeQuery>(&GetHomeQuery)
                     .await
                     .map_err(classify)?;
+                if let Some(error) = classify_raw_api_error(&first) {
+                    return Err(error);
+                }
                 let mut shelves = crate::home_feed::shelves_from_raw(&first);
                 let mut token = crate::home_feed::continuation_token(&first);
 
@@ -382,6 +401,10 @@ macro_rules! impl_music_source {
                         .raw_json_query::<ytmapi_rs::query::GetPlaylistTracksQuery>(&query)
                         .await
                         .map_err(classify)?;
+
+                    if let Some(error) = classify_raw_api_error(&json) {
+                        return Err(error);
+                    }
 
                     let value: ytmapi_rs::json::Json = serde_json::from_str(&json)
                         .map_err(|e| SourceError::Parse(e.to_string()))?;
@@ -653,6 +676,9 @@ impl MusicSource for YtMusicSource<NoAuthToken> {
                 .raw_json_query::<ytmapi_rs::query::GetPlaylistTracksQuery>(&query)
                 .await
                 .map_err(classify)?;
+            if let Some(error) = classify_raw_api_error(&json) {
+                return Err(error);
+            }
             let value =
                 serde_json::from_str(&json).map_err(|e| SourceError::Parse(e.to_string()))?;
             let items: Vec<ytmapi_rs::parse::PlaylistItem> = ytmapi_rs::parse::ProcessedResult {
@@ -835,6 +861,21 @@ mod tests {
         assert!(matches!(rate_limited, Some(SourceError::RateLimited)));
 
         assert!(classify_raw_api_error("{\"contents\":{}}").is_none());
+    }
+
+    #[test]
+    fn html_bot_check_bodies_become_rate_limited() {
+        let html = "<html><head><title>Sorry...</title></head><body><h1>We're sorry...</h1><p>... but your computer or network may be sending automated queries.</p></body></html>";
+        assert!(matches!(
+            classify_raw_api_error(html),
+            Some(SourceError::RateLimited)
+        ));
+
+        let query = ytmapi_rs::query::GetLibraryAlbumsQuery::default();
+        let err =
+            parse_json::<_, Vec<ytmapi_rs::parse::SearchResultAlbum>>(&query, html.to_string())
+                .unwrap_err();
+        assert!(matches!(err, SourceError::RateLimited));
     }
 
     #[test]
