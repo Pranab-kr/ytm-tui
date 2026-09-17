@@ -14,12 +14,13 @@ use ratatui::{
 };
 use ytm_player::player::{PlaybackState, RepeatMode};
 
-/// Rows inside the bar, in order: blank margin, rule, title, progress. `render`
+/// Rows inside the bar, in order: blank margin, rule, title, gap, progress. `render`
 /// reserves `HEIGHT` and turns a click into a position from `PROGRESS_ROW`, so
 /// these are the single source of truth — a copy drifts and a click seeks wrong.
 pub const RULE_ROW: u16 = 1;
-pub const PROGRESS_ROW: u16 = 3;
-pub const HEIGHT: u16 = 4;
+pub const TITLE_ROW: u16 = 2;
+pub const PROGRESS_ROW: u16 = 4;
+pub const HEIGHT: u16 = 5;
 
 /// Eighth-block glyphs give 8x the resolution of a plain block per column.
 const EIGHTHS: [char; 8] = [
@@ -102,12 +103,14 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         return;
     }
 
-    // Margin, rule, title, progress. The blank row is what keeps the rule from
-    // sitting flush against the last track — the owner asked for a little room,
-    // and one row is enough that the list barely pays for it.
+    // Margin, rule, title, blank gap, progress. The blank row above the rule is
+    // what keeps the rule from sitting flush against the last track; the gap row
+    // between title and progress gives breathing room so the seekbar and title
+    // do not crowd together.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -177,7 +180,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
             ])
         }
     };
-    f.render_widget(Paragraph::new(line), rows[2]);
+    f.render_widget(Paragraph::new(line), rows[TITLE_ROW as usize]);
 
     // Row 2: elapsed, bar, duration, then the mode flags.
     let pos = s.position.as_secs();
@@ -318,6 +321,16 @@ mod tests {
             rows[i + 1].contains("Roygbiv"),
             "the title follows the rule, got {:?}",
             rows[i + 1]
+        );
+        assert!(
+            rows[i + 2].trim().is_empty(),
+            "the row between title and seekbar is a blank gap, got {:?}",
+            rows[i + 2]
+        );
+        assert!(
+            rows[i + 3].contains("0:00") && rows[i + 3].contains("2:00"),
+            "the progress bar follows the gap, got {:?}",
+            rows[i + 3]
         );
     }
 

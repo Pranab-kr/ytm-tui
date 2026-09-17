@@ -541,12 +541,12 @@ mod tests {
         // Paging and `zz` are computed from this. If it counted the now-playing
         // bar or the heading, a half-page jump would overshoot the screen.
         let area = Rect::new(0, 0, 80, 24);
-        // 24 - 4 (now playing: margin, rule, title, progress) - 1 (heading) = 19
-        assert_eq!(list_rows_for(area, false, false, false), 19);
+        // 24 - 5 (now playing: margin, rule, title, gap, progress) - 1 (heading) = 18
+        assert_eq!(list_rows_for(area, false, false, false), 18);
         // The search pane also spends a row on the query line.
-        assert_eq!(list_rows_for(area, true, false, false), 18);
+        assert_eq!(list_rows_for(area, true, false, false), 17);
         // A column header costs one more row of list.
-        assert_eq!(list_rows_for(area, false, false, true), 18);
+        assert_eq!(list_rows_for(area, false, false, true), 17);
     }
 
     #[test]
@@ -641,6 +641,10 @@ mod tests {
         assert_eq!(
             click_target(area, 40, 21, false, false, false),
             ClickTarget::Nothing
+        );
+        assert_eq!(
+            click_target(area, 40, 23, false, false, false),
+            ClickTarget::Progress(40)
         );
         assert_eq!(
             click_target(area, 40, 200, false, false, false),
