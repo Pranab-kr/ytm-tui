@@ -68,7 +68,18 @@ impl Cache {
                 artists TEXT NOT NULL, album TEXT, duration INTEGER NOT NULL,
                 thumbnail_url TEXT, is_explicit INTEGER NOT NULL,
                 playlist_id TEXT, sort INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS tracks_by_playlist ON tracks(playlist_id, sort);",
+             CREATE INDEX IF NOT EXISTS tracks_by_playlist ON tracks(playlist_id, sort);
+             CREATE TABLE IF NOT EXISTS downloaded_tracks (
+                video_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artists TEXT NOT NULL,
+                album TEXT,
+                duration_secs INTEGER NOT NULL,
+                thumbnail_url TEXT,
+                file_path TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                downloaded_at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS idx_downloaded_at ON downloaded_tracks (downloaded_at DESC);",
         )?;
         self.conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?1)",
@@ -152,6 +163,64 @@ impl Cache {
 
     pub fn load_library_songs(&self) -> Result<Vec<Track>, CacheError> {
         self.select_tracks("playlist_id IS NULL", params![])
+    }
+
+    pub fn save_downloaded_track(&self, track: &DownloadedTrack) -> Result<(), CacheError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO downloaded_tracks
+             (video_id, title, artists, album, duration_secs, thumbnail_url, file_path, file_size_bytes, downloaded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                track.video_id.as_str(),
+                track.title,
+                track.artists.join(&ARTIST_SEP.to_string()),
+                track.album,
+                track.duration_secs as i64,
+                track.thumbnail_url,
+                track.file_path,
+                track.file_size_bytes as i64,
+                track.downloaded_at as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_downloaded_track(&self, video_id: &VideoId) -> Result<(), CacheError> {
+        self.conn.execute(
+            "DELETE FROM downloaded_tracks WHERE video_id = ?1",
+            params![video_id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_downloaded_tracks(&self) -> Result<Vec<DownloadedTrack>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT video_id, title, artists, album, duration_secs, thumbnail_url, file_path, file_size_bytes, downloaded_at
+             FROM downloaded_tracks ORDER BY downloaded_at DESC"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let artists: String = r.get(2)?;
+            Ok(DownloadedTrack {
+                video_id: VideoId::from(r.get::<_, String>(0)?),
+                title: r.get(1)?,
+                artists: split_artists(&artists),
+                album: r.get(3)?,
+                duration_secs: r.get::<_, i64>(4)?.max(0) as u64,
+                thumbnail_url: r.get(5)?,
+                file_path: r.get(6)?,
+                file_size_bytes: r.get::<_, i64>(7)?.max(0) as u64,
+                downloaded_at: r.get::<_, i64>(8)?.max(0) as u64,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn is_track_downloaded(&self, video_id: &VideoId) -> Result<bool, CacheError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE video_id = ?1)")?;
+        let exists: i64 = stmt.query_row(params![video_id.as_str()], |r| r.get(0))?;
+        Ok(exists != 0)
     }
 
     pub fn clear(&self) -> Result<(), CacheError> {
@@ -399,5 +468,32 @@ mod tests {
         let c = Cache::open(&path).expect("must recover, not fail");
         assert!(c.load_playlists().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn downloaded_tracks_crud_operations() {
+        let cache = Cache::open_in_memory().unwrap();
+        let track = DownloadedTrack {
+            video_id: VideoId::from("vid1"),
+            title: "Song 1".into(),
+            artists: vec!["Artist A".into()],
+            album: Some("Album X".into()),
+            duration_secs: 180,
+            thumbnail_url: None,
+            file_path: "/tmp/music/vid1.opus".into(),
+            file_size_bytes: 4 * 1024 * 1024,
+            downloaded_at: 1700000000,
+        };
+
+        assert!(!cache.is_track_downloaded(&track.video_id).unwrap());
+        cache.save_downloaded_track(&track).unwrap();
+        assert!(cache.is_track_downloaded(&track.video_id).unwrap());
+
+        let list = cache.get_downloaded_tracks().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "Song 1");
+
+        cache.remove_downloaded_track(&track.video_id).unwrap();
+        assert!(!cache.is_track_downloaded(&track.video_id).unwrap());
     }
 }

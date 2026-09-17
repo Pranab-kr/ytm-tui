@@ -151,6 +151,35 @@ impl Track {
     }
 }
 
+/// A track permanently downloaded to local storage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DownloadedTrack {
+    pub video_id: VideoId,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub duration_secs: u64,
+    pub thumbnail_url: Option<String>,
+    pub file_path: String,
+    pub file_size_bytes: u64,
+    pub downloaded_at: u64,
+}
+
+impl DownloadedTrack {
+    pub fn to_track(&self) -> Track {
+        Track {
+            video_id: self.video_id.clone(),
+            set_video_id: None,
+            title: self.title.clone(),
+            artists: self.artists.clone(),
+            album: self.album.clone(),
+            duration: TrackDuration::from_secs(self.duration_secs),
+            thumbnail_url: self.thumbnail_url.clone(),
+            is_explicit: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Playlist {
     pub id: PlaylistId,
