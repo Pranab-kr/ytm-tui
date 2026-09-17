@@ -72,6 +72,7 @@ impl KeyMap {
             ('K', InputAction::MoveEntryUp),
             ('C', InputAction::ClearQueue),
             ('L', InputAction::Refresh),
+            ('d', InputAction::Download),
         ] {
             chars.insert(c, a);
         }
@@ -173,8 +174,8 @@ impl KeyMap {
         }
 
         match key.code {
-            // Source digits are fixed; 8-9 and 0 remain unbound.
-            KeyCode::Char(c @ '1'..='7') => Some(InputAction::GoTo(c as u8 - b'0')),
+            // Source digits are fixed; 9 and 0 remain unbound.
+            KeyCode::Char(c @ '1'..='8') => Some(InputAction::GoTo(c as u8 - b'0')),
             KeyCode::Char(c) => self.chars.get(&c).cloned(),
             KeyCode::Down => Some(InputAction::Down),
             KeyCode::Up => Some(InputAction::Up),
@@ -277,6 +278,7 @@ const ACTION_NAMES: &[&str] = &[
     "focus_current",
     "page_down",
     "page_up",
+    "download",
 ];
 
 fn action_from_name(n: &str) -> Option<InputAction> {
@@ -321,6 +323,7 @@ fn action_from_name(n: &str) -> Option<InputAction> {
         "page_up" => InputAction::PageUp,
         "home" => InputAction::Home,
         "end" => InputAction::End,
+        "download" => InputAction::Download,
         _ => return None,
     })
 }
@@ -550,14 +553,14 @@ mod tests {
     fn number_keys_jump_straight_to_a_source() {
         let m = KeyMap::default();
         assert_eq!(m.resolve(key('1'), Focus::Main), Some(InputAction::GoTo(1)));
-        assert_eq!(m.resolve(key('7'), Focus::Main), Some(InputAction::GoTo(7)));
+        assert_eq!(m.resolve(key('8'), Focus::Main), Some(InputAction::GoTo(8)));
     }
 
     #[test]
     fn digits_outside_the_source_range_are_not_bound() {
-        // 8-9 and 0 name no source; binding them would swallow the key.
+        // 9 and 0 name no source; binding them would swallow the key.
         let m = KeyMap::default();
-        assert_eq!(m.resolve(key('8'), Focus::Main), None);
+        assert_eq!(m.resolve(key('9'), Focus::Main), None);
         assert_eq!(m.resolve(key('0'), Focus::Main), None);
     }
 
@@ -753,5 +756,14 @@ mod tests {
                 "{n:?} is offered to users but maps to no action"
             );
         }
+    }
+
+    #[test]
+    fn d_key_resolves_to_download_action() {
+        let km = KeyMap::default();
+        assert_eq!(
+            km.resolve(key('d'), Focus::Main),
+            Some(InputAction::Download)
+        );
     }
 }

@@ -266,6 +266,7 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         // An open artist shows their tracks, like an open playlist does.
         Pane::Artists if s.open_artist.is_some() => tracklist::draw(f, list_row, s, t),
         Pane::Artists => playlists::draw_artists(f, list_row, s, t),
+        Pane::Downloads => tracklist::draw(f, list_row, s, t),
     }
 }
 
@@ -326,6 +327,7 @@ fn pane_title(s: &AppState) -> String {
         },
         Pane::Search => "Search".to_owned(),
         Pane::Queue => "Queue".to_owned(),
+        Pane::Downloads => "Downloads".to_owned(),
     }
 }
 

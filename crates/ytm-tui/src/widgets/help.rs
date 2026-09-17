@@ -73,6 +73,7 @@ fn action_label(a: &InputAction) -> Option<&'static str> {
         A::ToggleVisual => "visual select",
         A::CycleTheme => "next theme",
         A::EditConfig => "edit config",
+        A::Download => "download track",
         // Not bindings a user presses on purpose.
         A::Confirm | A::Cancel | A::NextPane | A::PrevPane => return None,
         // Wheel motion, not a binding anyone types.
@@ -105,7 +106,7 @@ fn rows(km: &KeyMap) -> Vec<(String, &'static str)> {
 
 /// Fixed bindings that `KeyMap::bindings` cannot report (FR-U2).
 const FIXED_ROWS: [(&str, &str); 7] = [
-    ("1-7", "jump to source"),
+    ("1-8", "jump to source"),
     ("tab", "next source"),
     ("^d/^u", "half page down/up"),
     ("^w", "delete word (search)"),
@@ -307,7 +308,7 @@ mod tests {
         // explicit row they would be invisible.
         let text = text_of(&help_open());
         assert!(
-            text.contains("1-7"),
+            text.contains("1-8"),
             "the source jump keys should be listed, got: {text}"
         );
     }

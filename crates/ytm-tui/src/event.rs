@@ -64,6 +64,8 @@ pub enum InputAction {
     CycleTheme,
     /// Open config.toml in $EDITOR, reloading keys and theme on exit.
     EditConfig,
+    /// Download track(s) for offline listening.
+    Download,
     Char(char),
     Backspace,
     /// Delete the word before the cursor (Ctrl+W).
@@ -88,6 +90,7 @@ pub enum AppEvent {
 
     PlaylistsLoaded(Vec<Playlist>),
     LibrarySongsLoaded(Vec<Track>),
+    DownloadedTracksLoaded(Vec<Track>),
     AlbumsLoaded(Vec<Album>),
     ArtistsLoaded(Vec<Artist>),
     PlaylistTracksLoaded {

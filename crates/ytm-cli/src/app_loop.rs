@@ -1084,7 +1084,7 @@ fn pane_task(pane: Pane) -> Option<Task> {
         Pane::Songs => Task::LoadSongs,
         Pane::Albums => Task::LoadAlbums,
         Pane::Artists => Task::LoadArtists,
-        Pane::Search | Pane::Queue => return None,
+        Pane::Search | Pane::Queue | Pane::Downloads => return None,
     })
 }
 

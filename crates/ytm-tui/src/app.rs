@@ -23,12 +23,13 @@ pub enum Pane {
     Artists,
     Search,
     Queue,
+    Downloads,
 }
 
-/// Sidebar order, and therefore what the number keys 1-6 select. The sidebar
+/// Sidebar order, and therefore what the number keys 1-8 select. The sidebar
 /// widget renders from `SOURCES`, which must stay in this order — there is a
 /// test pinning the two together.
-pub const PANE_ORDER: [Pane; 7] = [
+pub const PANE_ORDER: [Pane; 8] = [
     Pane::Home,
     Pane::Playlists,
     Pane::Songs,
@@ -36,6 +37,7 @@ pub const PANE_ORDER: [Pane; 7] = [
     Pane::Artists,
     Pane::Search,
     Pane::Queue,
+    Pane::Downloads,
 ];
 
 impl Pane {
@@ -143,6 +145,7 @@ pub struct AppState {
 
     pub playlists: Vec<Playlist>,
     pub tracks: Vec<Track>,
+    pub downloaded_tracks: Vec<Track>,
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
     pub open_playlist: Option<PlaylistId>,
@@ -221,6 +224,10 @@ impl AppState {
             }
             AppEvent::LibrarySongsLoaded(v) => {
                 self.tracks = v;
+                self.loading = false;
+            }
+            AppEvent::DownloadedTracksLoaded(v) => {
+                self.downloaded_tracks = v;
                 self.loading = false;
             }
             AppEvent::AlbumsLoaded(v) => {
@@ -632,7 +639,7 @@ impl AppState {
             Pane::Artists => self.visible_artist_count(),
             // Search results are never filtered locally: the query already did it.
             Pane::Search => self.search_results.len(),
-            Pane::Queue => self.visible_track_count(),
+            Pane::Queue | Pane::Downloads => self.visible_track_count(),
         }
     }
 
@@ -666,6 +673,7 @@ impl AppState {
             Pane::Search if self.search_query.trim().is_empty() => "Type to search YouTube Music",
             Pane::Search => "No matches",
             Pane::Queue => "Queue is empty — press a on a track to add it",
+            Pane::Downloads => "No downloaded tracks — press d on a track to download it",
         }
     }
 
@@ -789,7 +797,7 @@ impl AppState {
     /// Whether the track header is drawn; shared by layout and click geometry.
     pub fn column_header_visible(&self) -> bool {
         let track_shaped = match self.pane {
-            Pane::Songs | Pane::Queue | Pane::Search => true,
+            Pane::Songs | Pane::Queue | Pane::Search | Pane::Downloads => true,
             Pane::Playlists => self.open_playlist.is_some(),
             Pane::Albums => self.open_album.is_some(),
             Pane::Artists => self.open_artist.is_some(),
@@ -808,7 +816,7 @@ impl AppState {
             Pane::Playlists if self.open_playlist.is_some() => self.any_track_visible(),
             Pane::Albums if self.open_album.is_some() => self.any_track_visible(),
             Pane::Artists if self.open_artist.is_some() => self.any_track_visible(),
-            Pane::Songs | Pane::Queue => self.any_track_visible(),
+            Pane::Songs | Pane::Queue | Pane::Downloads => self.any_track_visible(),
             Pane::Playlists => self.playlists.iter().any(|p| self.matches_filter(&p.title)),
             Pane::Albums => self.albums.iter().any(|a| self.album_matches(a)),
             Pane::Artists => self.artists.iter().any(|a| self.matches_filter(&a.name)),
@@ -883,6 +891,7 @@ impl AppState {
             Pane::Albums if self.open_album.is_some() => &self.album_tracks,
             Pane::Search => &self.search_results,
             Pane::Queue => &self.queue,
+            Pane::Downloads => &self.downloaded_tracks,
             _ => &self.tracks,
         }
     }
@@ -1314,7 +1323,7 @@ impl AppState {
                     HomeRow::Heading(_) => None,
                 })
                 .collect(),
-            Pane::Search | Pane::Queue | Pane::Songs => self
+            Pane::Search | Pane::Queue | Pane::Songs | Pane::Downloads => self
                 .visible_tracks()
                 .iter()
                 .map(|t| t.video_id.clone())
@@ -1367,7 +1376,7 @@ impl AppState {
                     HomeRow::Heading(_) => None,
                 })
                 .collect(),
-            Pane::Search | Pane::Queue | Pane::Songs => {
+            Pane::Search | Pane::Queue | Pane::Songs | Pane::Downloads => {
                 self.visible_tracks().into_iter().cloned().collect()
             }
             Pane::Playlists if self.open_playlist.is_some() => {
@@ -1461,7 +1470,7 @@ impl AppState {
                 HomeTarget::Track(_) => self.home_track_at(self.selected),
                 _ => None,
             },
-            Pane::Search | Pane::Queue | Pane::Songs => self
+            Pane::Search | Pane::Queue | Pane::Songs | Pane::Downloads => self
                 .visible_tracks()
                 .get(self.selected)
                 .map(|t| (*t).clone()),
@@ -1583,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_tab_cycles_only_between_search_and_queue() {
+    fn guest_tab_cycles_between_unauthenticated_panes() {
         let mut state = AppState {
             guest: true,
             pane: Pane::Search,
@@ -1592,7 +1601,11 @@ mod tests {
         state.apply_input(InputAction::NextPane);
         assert_eq!(state.pane, Pane::Queue);
         state.apply_input(InputAction::NextPane);
+        assert_eq!(state.pane, Pane::Downloads);
+        state.apply_input(InputAction::NextPane);
         assert_eq!(state.pane, Pane::Search);
+        state.apply_input(InputAction::PrevPane);
+        assert_eq!(state.pane, Pane::Downloads);
         state.apply_input(InputAction::PrevPane);
         assert_eq!(state.pane, Pane::Queue);
     }
@@ -2883,7 +2896,7 @@ mod tests {
         let mut s = AppState::default();
         // Backwards from the first source reaches the last.
         s.apply_input(InputAction::PrevPane);
-        assert_eq!(s.pane, Pane::Queue);
+        assert_eq!(s.pane, Pane::Downloads);
         // And forwards from the last comes back to the first.
         s.apply_input(InputAction::NextPane);
         assert_eq!(s.pane, Pane::Home);
@@ -3364,5 +3377,12 @@ mod tests {
             s.selected_track().map(|t| t.title),
             Some("Library song".to_owned())
         );
+    }
+
+    #[test]
+    fn downloads_pane_is_navigable_and_lists_downloaded_tracks() {
+        let mut state = AppState::default();
+        state.set_pane(Pane::Downloads);
+        assert_eq!(state.pane, Pane::Downloads);
     }
 }

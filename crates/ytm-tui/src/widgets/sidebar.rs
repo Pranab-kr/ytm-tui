@@ -15,7 +15,7 @@ use ratatui::{
 };
 
 /// Display order of the sources, top to bottom.
-pub const SOURCES: [(Pane, &str); 7] = [
+pub const SOURCES: [(Pane, &str); 8] = [
     (Pane::Home, "Home"),
     (Pane::Playlists, "Playlists"),
     // "Fav" rather than "Songs": the pane is the liked/saved songs, and the old
@@ -25,6 +25,7 @@ pub const SOURCES: [(Pane, &str); 7] = [
     (Pane::Artists, "Artists"),
     (Pane::Search, "Search"),
     (Pane::Queue, "Queue"),
+    (Pane::Downloads, "Downloads"),
 ];
 
 /// One line of the sidebar as it is drawn: a source, or a blank row separating
@@ -41,7 +42,7 @@ pub enum SidebarRow {
 /// The sidebar top to bottom: Home, the library (Playlists/Fav/Albums/Artists),
 /// then Search and Queue, each group set apart by a blank row. `Source` indices
 /// are into `SOURCES`/`PANE_ORDER`, and the number shown is the jump key.
-pub const LAYOUT: [SidebarRow; 9] = [
+pub const LAYOUT: [SidebarRow; 10] = [
     SidebarRow::Source(0), // Home
     SidebarRow::Spacer,
     SidebarRow::Source(1), // Playlists
@@ -51,6 +52,7 @@ pub const LAYOUT: [SidebarRow; 9] = [
     SidebarRow::Spacer,
     SidebarRow::Source(5), // Search
     SidebarRow::Source(6), // Queue
+    SidebarRow::Source(7), // Downloads
 ];
 
 /// The source index drawn at screen `row`, or `None` for a spacer or a row past
