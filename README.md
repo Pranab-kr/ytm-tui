@@ -79,7 +79,7 @@ cp target/release/ytm-tui ~/.local/bin/
 You can launch the app immediately:
 
 ```bash
-ytm-tui   # or simply `ytm`
+ytm-tui
 ```
 
 ---
