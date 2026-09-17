@@ -71,29 +71,81 @@ where
 /// its own cards. Each card carries a kind tag — one shelf mixes all four.
 pub fn draw_home(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     use crate::app::HomeRow;
+    use ytm_core::HomeTarget;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if s.home_rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                s.empty_message(),
+                Style::default().fg(t.fg_dim),
+            )),
+            area,
+        );
+        return;
+    }
 
     let w = area.width as usize;
     let kind_w = KIND_WIDTH;
     let text_w = w.saturating_sub(kind_w);
     let title_w = (text_w * 55) / 100;
     let sub_w = text_w.saturating_sub(title_w);
+    const GUTTER_WIDTH: usize = 2;
+    let item_title_w = title_w.saturating_sub(GUTTER_WIDTH);
 
-    draw_list(f, area, s, t, s.home_rows.len(), |idx, style, dim| {
-        match &s.home_rows[idx] {
-            // A heading is not selectable, so it keeps the accent colour even
-            // under the cursor — styling it as a selected row would suggest
-            // Enter does something.
-            HomeRow::Heading(title) => vec![Span::styled(
+    let (start, end) = visible_window(
+        s.selected,
+        s.scroll_offset,
+        area.height as usize,
+        s.home_rows.len(),
+    );
+
+    let items: Vec<ListItem> = (start..end)
+        .map(|idx| match &s.home_rows[idx] {
+            HomeRow::Heading(title) => ListItem::new(Line::from(vec![Span::styled(
                 pad_to_width(title, w),
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-            )],
-            HomeRow::Item(i) => vec![
-                Span::styled(pad_to_width(&format!("  {}", i.title), title_w), style),
-                Span::styled(pad_to_width(&i.subtitle, sub_w), dim),
-                Span::styled(format!("{:>kind_w$}", i.kind_label()), dim),
-            ],
-        }
-    });
+            )])),
+            HomeRow::Item(i) => {
+                let is_sel = idx == s.selected;
+                let marked = match &i.target {
+                    HomeTarget::Track(v) => s.marked.contains(v),
+                    _ => false,
+                };
+                let highlighted = is_sel || marked;
+                let base = Style::default().fg(t.fg);
+                let style = if highlighted { base.bg(t.bg_sel) } else { base };
+                let dim = if highlighted {
+                    style
+                } else {
+                    Style::default().fg(t.fg_dim)
+                };
+
+                let gutter = if marked { "\u{2022} " } else { "  " };
+                let gutter_style = if highlighted {
+                    Style::default().fg(t.accent).bg(t.bg_sel)
+                } else {
+                    Style::default().fg(t.accent)
+                };
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(gutter, gutter_style),
+                    Span::styled(pad_to_width(&i.title, item_title_w), style),
+                    Span::styled(pad_to_width(&i.subtitle, sub_w), dim),
+                    Span::styled(format!("{:>kind_w$}", i.kind_label()), dim),
+                ]))
+                .style(if highlighted {
+                    Style::default().bg(t.bg_sel)
+                } else {
+                    Style::default()
+                })
+            }
+        })
+        .collect();
+
+    f.render_widget(List::new(items), area);
 }
 
 pub fn draw_playlists(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
@@ -317,5 +369,50 @@ mod tests {
                 "empty {pane:?} pane should show {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn marked_home_tracks_render_with_bullet_and_highlighted_background() {
+        use crate::app::HomeRow;
+        use ytm_core::{HomeItem, HomeTarget, VideoId};
+
+        let mut s = AppState {
+            pane: Pane::Home,
+            home_rows: vec![
+                HomeRow::Heading("Quick picks".into()),
+                HomeRow::Item(HomeItem {
+                    title: "Song 1".into(),
+                    subtitle: "Artist 1".into(),
+                    target: HomeTarget::Track(VideoId::from("v1")),
+                    thumbnail_url: None,
+                }),
+                HomeRow::Item(HomeItem {
+                    title: "Song 2".into(),
+                    subtitle: "Artist 2".into(),
+                    target: HomeTarget::Track(VideoId::from("v2")),
+                    thumbnail_url: None,
+                }),
+            ],
+            selected: 2, // cursor on row 2 (Song 2), row 1 (Song 1) is marked
+            ..Default::default()
+        };
+        s.marked.insert(VideoId::from("v1"));
+        let theme = Theme::preset("tokyonight").unwrap();
+
+        let backend = ratatui::backend::TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| super::draw_home(f, f.area(), &s, &theme))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(rendered.contains('•'), "marked home track needs a bullet");
+        // Row 1 is Song 1 (marked). Cell (0, 1) should have bg_sel.
+        let cell = buffer.cell((0, 1)).unwrap();
+        assert_eq!(
+            cell.bg, theme.bg_sel,
+            "marked home track needs background highlight"
+        );
     }
 }

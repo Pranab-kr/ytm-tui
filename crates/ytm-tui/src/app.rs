@@ -1454,6 +1454,27 @@ impl AppState {
         let Some(anchor) = self.visual_anchor else {
             return;
         };
+        if self.pane == Pane::Home {
+            if self.home_rows.is_empty() {
+                return;
+            }
+            let last = self.home_rows.len() - 1;
+            let a = anchor.min(last);
+            let b = self.selected.min(last);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            self.marked = self.marks_before_visual.clone();
+            for r in &self.home_rows[lo..=hi] {
+                if let HomeRow::Item(HomeItem {
+                    target: HomeTarget::Track(v),
+                    ..
+                }) = r
+                {
+                    self.marked.insert(v.clone());
+                }
+            }
+            return;
+        }
+
         let rows = self.row_ids();
         if rows.is_empty() {
             return;
@@ -2430,6 +2451,48 @@ mod tests {
         s.apply(AppEvent::Input(InputAction::ToggleVisual));
         s.apply(AppEvent::Input(InputAction::End));
         assert_eq!(marked_ids(&s), vec!["v0", "v1", "v2", "v3"]);
+    }
+
+    #[test]
+    fn visual_selection_on_home_marks_tracks_in_range() {
+        let mut s = AppState {
+            pane: Pane::Home,
+            home_rows: vec![
+                HomeRow::Heading("Listen again".into()),
+                HomeRow::Item(HomeItem {
+                    title: "Playlist 1".into(),
+                    subtitle: "PL".into(),
+                    target: HomeTarget::Playlist(PlaylistId::from("p1")),
+                    thumbnail_url: None,
+                }),
+                HomeRow::Item(HomeItem {
+                    title: "Song 1".into(),
+                    subtitle: "Artist 1".into(),
+                    target: HomeTarget::Track(VideoId::from("v1")),
+                    thumbnail_url: None,
+                }),
+                HomeRow::Item(HomeItem {
+                    title: "Song 2".into(),
+                    subtitle: "Artist 2".into(),
+                    target: HomeTarget::Track(VideoId::from("v2")),
+                    thumbnail_url: None,
+                }),
+            ],
+            selected: 2, // cursor on Song 1 (row 2)
+            ..Default::default()
+        };
+        s.toggle_visual();
+        s.selected = 3; // move down to Song 2 (row 3)
+        s.refresh_visual_marks();
+        assert!(
+            s.marked.contains(&VideoId::from("v1")),
+            "Song 1 should be marked"
+        );
+        assert!(
+            s.marked.contains(&VideoId::from("v2")),
+            "Song 2 should be marked"
+        );
+        assert_eq!(s.marked.len(), 2);
     }
 
     #[test]
