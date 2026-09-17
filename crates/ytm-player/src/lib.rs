@@ -6,3 +6,4 @@ pub mod mpv_backend;
 pub mod player;
 pub mod queue;
 pub mod resolver;
+pub mod storage;
