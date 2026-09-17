@@ -91,6 +91,7 @@ pub enum AppEvent {
     PlaylistsLoaded(Vec<Playlist>),
     LibrarySongsLoaded(Vec<Track>),
     DownloadedTracksLoaded(Vec<Track>),
+    DownloadedTrackSaved(Track),
     AlbumsLoaded(Vec<Album>),
     ArtistsLoaded(Vec<Artist>),
     PlaylistTracksLoaded {

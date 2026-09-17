@@ -181,13 +181,105 @@ fn source_ready(state: &mut AppState, authenticated: bool) {
 /// Start background work, declining with a toast if the source is not built yet
 /// — replaying it later would fire a request the user moved on from. Opening a
 /// playlist shows its cached rows first; nothing read them back before.
+#[allow(clippy::too_many_arguments)]
 fn try_spawn(
     task: Task,
     source: &Option<Arc<dyn MusicSource>>,
     tx: &mpsc::UnboundedSender<AppEvent>,
     state: &mut AppState,
     cache: Option<&ytm_core::cache::Cache>,
+    storage: Option<&ytm_player::storage::AudioStorageManager>,
+    cookie_file: Option<&std::path::Path>,
+    cache_writer: Option<&std::sync::mpsc::Sender<CacheWork>>,
 ) {
+    if let Task::LoadDownloads = &task {
+        if let Some(cache) = cache {
+            match cache.get_downloaded_tracks() {
+                Ok(v) => {
+                    let tracks = v.into_iter().map(|dt| dt.to_track()).collect();
+                    let _ = tx.send(AppEvent::DownloadedTracksLoaded(tracks));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read downloaded tracks");
+                    state.loading = false;
+                }
+            }
+        } else {
+            state.loading = false;
+        }
+        return;
+    }
+    if let Task::Download(tracks) = task {
+        if let Some(storage) = storage.cloned() {
+            let cookie = cookie_file.map(|p| p.to_path_buf());
+            let tx = tx.clone();
+            let writer = cache_writer.cloned();
+            tokio::task::spawn_blocking(move || {
+                for track in tracks {
+                    let dest = storage
+                        .download_dir()
+                        .join(format!("{}.opus", track.video_id.as_str()));
+                    match storage.download_track_sync(&track.video_id, &dest, cookie.as_deref()) {
+                        Ok(saved_path) => {
+                            let file_size = saved_path.metadata().map(|m| m.len()).unwrap_or(0);
+                            let dt = ytm_core::DownloadedTrack {
+                                video_id: track.video_id.clone(),
+                                title: track.title.clone(),
+                                artists: track.artists.clone(),
+                                album: track.album.clone(),
+                                duration_secs: track.duration.as_secs(),
+                                thumbnail_url: track.thumbnail_url.clone(),
+                                file_path: saved_path.to_string_lossy().into_owned(),
+                                file_size_bytes: file_size,
+                                downloaded_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                            };
+                            if let Some(w) = &writer {
+                                let _ = w.send(CacheWork::SaveDownloaded(dt));
+                            }
+                            let _ = tx.send(AppEvent::DownloadedTrackSaved(track));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::Error(format!(
+                                "Download failed for \"{}\": {}",
+                                track.title, e
+                            )));
+                        }
+                    }
+                }
+            });
+        } else {
+            state.push_toast(
+                ToastKind::Error,
+                "Download failed: storage not configured",
+                state.elapsed_ms,
+            );
+        }
+        return;
+    }
+    if let Task::DeleteDownloads(tracks) = task {
+        if let Some(storage) = storage.cloned() {
+            let writer = cache_writer.cloned();
+            tokio::task::spawn_blocking(move || {
+                for track in tracks {
+                    for ext in [".opus", ".webm", ".m4a", ".mp3", ""] {
+                        let p = storage
+                            .download_dir()
+                            .join(format!("{}{ext}", track.video_id.as_str()));
+                        if p.is_file() {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                    if let Some(w) = &writer {
+                        let _ = w.send(CacheWork::RemoveDownloaded(track.video_id.clone()));
+                    }
+                }
+            });
+        }
+        return;
+    }
     if let Task::OpenPlaylist(id) = &task
         && let Some(cache) = cache
     {
@@ -227,16 +319,19 @@ pub enum Task {
         name: String,
     },
     Search(String),
-    /// Artists matching a query (FR-B7). The Artists pane's own search, kept
-    /// separate from `Search` so its results replace the artist list rather than
-    /// the song results.
     SearchArtists(String),
+    /// Refresh the downloaded tracks list from SQLite.
+    LoadDownloads,
     /// A server-side edit, carrying the token of the optimistic change it
     /// settles. Same spawn path as a read so the loop keeps one.
     Mutate {
         token: u64,
         task: MutationTask,
     },
+    /// Download track(s) for offline listening.
+    Download(Vec<ytm_core::Track>),
+    /// Delete downloaded track(s) from disk and local index.
+    DeleteDownloads(Vec<ytm_core::Track>),
 }
 
 /// Background work that changes server state. Separate from `Task` because these
@@ -711,7 +806,7 @@ pub fn dispatch_input(
     // queue-local and must keep working, so it is excluded by pane.
     let account_action = match &action {
         A::AddToPlaylist | A::CreatePlaylist | A::RenamePlaylist | A::DeletePlaylist => true,
-        A::RemoveFromPlaylist => state.pane != Pane::Queue,
+        A::RemoveFromPlaylist => state.pane != Pane::Queue && state.pane != Pane::Downloads,
         _ => false,
     };
     if state.guest && account_action {
@@ -888,6 +983,36 @@ pub fn dispatch_input(
             state.marked.clear();
             state.visual_anchor = None;
         }
+        A::RemoveFromPlaylist if state.pane == Pane::Downloads => {
+            let targets: Vec<ytm_core::Track> = if state.marked.is_empty() {
+                state.selected_track().into_iter().collect()
+            } else {
+                state
+                    .downloaded_tracks
+                    .iter()
+                    .filter(|t| state.marked.contains(&t.video_id))
+                    .cloned()
+                    .collect()
+            };
+            if !targets.is_empty() {
+                let target_ids: std::collections::HashSet<_> =
+                    targets.iter().map(|t| t.video_id.clone()).collect();
+                state
+                    .downloaded_tracks
+                    .retain(|t| !target_ids.contains(&t.video_id));
+                if state.selected >= state.downloaded_tracks.len() {
+                    state.selected = state.downloaded_tracks.len().saturating_sub(1);
+                }
+                let msg = match targets.as_slice() {
+                    [one] => format!("Deleted \"{}\" from downloads", one.title),
+                    many => format!("Deleted {} tracks from downloads", many.len()),
+                };
+                state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
+                state.marked.clear();
+                state.visual_anchor = None;
+                return Some(Task::DeleteDownloads(targets));
+            }
+        }
         A::MoveEntryUp | A::MoveEntryDown if state.pane == Pane::Queue => {
             let down = action == A::MoveEntryDown;
             // Marked rows move as one block, the way `x` removes them as one —
@@ -952,6 +1077,25 @@ pub fn dispatch_input(
             state.selected = 0;
         }
         A::ClearQueue => {}
+        A::Download => {
+            let tracks = queue_targets(state);
+            if tracks.is_empty() {
+                state.push_toast(
+                    ToastKind::Error,
+                    "nothing selected to download",
+                    state.elapsed_ms,
+                );
+                return None;
+            }
+            let msg = match tracks.as_slice() {
+                [one] => format!("Downloading \"{}\"…", one.title),
+                many => format!("Downloading {} tracks…", many.len()),
+            };
+            state.push_toast(ToastKind::Info, &msg, state.elapsed_ms);
+            state.marked.clear();
+            state.visual_anchor = None;
+            return Some(Task::Download(tracks));
+        }
         A::AddToPlaylist => open_add_to_playlist(state),
         A::RemoveFromPlaylist => open_remove_confirm(state),
         A::ToggleMark => state.toggle_mark(),
@@ -1084,7 +1228,8 @@ fn pane_task(pane: Pane) -> Option<Task> {
         Pane::Songs => Task::LoadSongs,
         Pane::Albums => Task::LoadAlbums,
         Pane::Artists => Task::LoadArtists,
-        Pane::Search | Pane::Queue | Pane::Downloads => return None,
+        Pane::Downloads => Task::LoadDownloads,
+        Pane::Search | Pane::Queue => return None,
     })
 }
 
@@ -1152,6 +1297,8 @@ pub async fn run(
     mut custom_theme: Option<Theme>,
     mut theme_file: Option<std::path::PathBuf>,
     mut auto_reload_theme: bool,
+    storage: Option<ytm_player::storage::AudioStorageManager>,
+    cookie_file: Option<std::path::PathBuf>,
 ) -> color_eyre::Result<u8> {
     use crossterm::event::{Event as CtEvent, EventStream, KeyEventKind, MouseEventKind};
     use futures::StreamExt;
@@ -1221,7 +1368,16 @@ pub async fn run(
                                 );
                                 if let Some(task) = task {
                                     if let Some(t) = start(&mut state, task) {
-                                        try_spawn(t, &source, &app_tx, &mut state, cache_reader.as_ref());
+                                        try_spawn(
+                                            t,
+                                            &source,
+                                            &app_tx,
+                                            &mut state,
+                                            cache_reader.as_ref(),
+                                            storage.as_ref(),
+                                            cookie_file.as_deref(),
+                                            cache_writer.as_ref(),
+                                        );
                                     }
                                     // A sidebar click is not part of a double-click
                                     // on a row.
@@ -1238,7 +1394,16 @@ pub async fn run(
                                         });
                                     if same && state.selected == before {
                                         if let Some(t) = dispatch_input(InputAction::Confirm, &mut state, &player, &behaviour) {
-                                            try_spawn(t, &source, &app_tx, &mut state, cache_reader.as_ref());
+                                            try_spawn(
+                                                t,
+                                                &source,
+                                                &app_tx,
+                                                &mut state,
+                                                cache_reader.as_ref(),
+                                                storage.as_ref(),
+                                                cookie_file.as_deref(),
+                                                cache_writer.as_ref(),
+                                            );
                                         }
                                         last_click = None;
                                     } else {
@@ -1328,7 +1493,16 @@ pub async fn run(
                                 }
                                 _ => {
                                     if let Some(task) = dispatch_input(a, &mut state, &player, &behaviour) {
-                                        try_spawn(task, &source, &app_tx, &mut state, cache_reader.as_ref());
+                                        try_spawn(
+                                            task,
+                                            &source,
+                                            &app_tx,
+                                            &mut state,
+                                            cache_reader.as_ref(),
+                                            storage.as_ref(),
+                                            cookie_file.as_deref(),
+                                            cache_writer.as_ref(),
+                                        );
                                     }
                                 }
                             }
@@ -1449,7 +1623,16 @@ pub async fn run(
                     }
                 }
                 if let Some(task) = search_tick(&mut debounce, &mut state, now_ms) {
-                    try_spawn(task, &source, &app_tx, &mut state, cache_reader.as_ref());
+                    try_spawn(
+                        task,
+                        &source,
+                        &app_tx,
+                        &mut state,
+                        cache_reader.as_ref(),
+                        storage.as_ref(),
+                        cookie_file.as_deref(),
+                        cache_writer.as_ref(),
+                    );
                 }
                 if art.is_enabled()
                     && let Some(url) = art_tick(&mut art, &state)
@@ -1528,6 +1711,7 @@ fn spawn_task(task: Task, source: Arc<dyn MusicSource>, tx: mpsc::UnboundedSende
             // Failures come back as MutationFailed, not Error: the token has to
             // survive so `rollback` reverts the right edit.
             Task::Mutate { token, task } => run_mutation(token, task, source.clone()).await,
+            Task::LoadDownloads | Task::Download(_) | Task::DeleteDownloads(_) => return,
         };
         match &ev {
             AppEvent::Error(m) => tracing::warn!(error = %m, "background task failed"),
@@ -1548,6 +1732,8 @@ fn event_name(ev: &AppEvent) -> &'static str {
     match ev {
         AppEvent::PlaylistsLoaded(_) => "playlists",
         AppEvent::LibrarySongsLoaded(_) => "songs",
+        AppEvent::DownloadedTracksLoaded(_) => "downloaded_tracks",
+        AppEvent::DownloadedTrackSaved(_) => "download_saved",
         AppEvent::AlbumsLoaded(_) => "albums",
         AppEvent::ArtistsLoaded(_) => "artists",
         AppEvent::PlaylistTracksLoaded { .. } => "playlist_tracks",
@@ -1567,6 +1753,8 @@ fn event_rows(ev: &AppEvent) -> usize {
     match ev {
         AppEvent::PlaylistsLoaded(v) => v.len(),
         AppEvent::LibrarySongsLoaded(v) => v.len(),
+        AppEvent::DownloadedTracksLoaded(v) => v.len(),
+        AppEvent::DownloadedTrackSaved(_) => 1,
         AppEvent::AlbumsLoaded(v) => v.len(),
         AppEvent::ArtistsLoaded(v) => v.len(),
         AppEvent::PlaylistTracksLoaded { tracks, .. } => tracks.len(),
@@ -1613,6 +1801,10 @@ pub fn preload_from_cache(cache: &ytm_core::cache::Cache, state: &mut AppState) 
         Ok(v) if !v.is_empty() => state.tracks = v,
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "could not read cached songs"),
+    }
+    match cache.get_downloaded_tracks() {
+        Ok(v) => state.downloaded_tracks = v.into_iter().map(|dt| dt.to_track()).collect(),
+        Err(e) => tracing::warn!(error = %e, "could not read downloaded tracks"),
     }
 }
 
@@ -1665,6 +1857,8 @@ pub enum CacheWork {
         id: ytm_core::PlaylistId,
         tracks: Vec<ytm_core::Track>,
     },
+    SaveDownloaded(ytm_core::DownloadedTrack),
+    RemoveDownloaded(ytm_core::VideoId),
 }
 
 impl CacheWork {
@@ -1673,6 +1867,8 @@ impl CacheWork {
             Self::Playlists(v) => c.save_playlists(&v),
             Self::LibrarySongs(v) => c.save_library_songs(&v),
             Self::PlaylistTracks { id, tracks } => c.save_playlist_tracks(&id, &tracks),
+            Self::SaveDownloaded(track) => c.save_downloaded_track(&track),
+            Self::RemoveDownloaded(id) => c.remove_downloaded_track(&id),
         }
     }
 
@@ -1681,6 +1877,8 @@ impl CacheWork {
             Self::Playlists(_) => "playlists",
             Self::LibrarySongs(_) => "songs",
             Self::PlaylistTracks { .. } => "playlist_tracks",
+            Self::SaveDownloaded(_) => "save_downloaded",
+            Self::RemoveDownloaded(_) => "remove_downloaded",
         }
     }
 }
@@ -3326,7 +3524,16 @@ mod tests {
 
         // No source yet: the toast path, which is also when a cold pane is most
         // likely to be looked at.
-        try_spawn(Task::OpenPlaylist(id), &None, &tx, &mut state, Some(&cache));
+        try_spawn(
+            Task::OpenPlaylist(id),
+            &None,
+            &tx,
+            &mut state,
+            Some(&cache),
+            None,
+            None,
+            None,
+        );
         assert_eq!(state.tracks.len(), 1, "try_spawn must run the preload");
         assert_eq!(state.tracks[0].title, "cached title");
     }
@@ -4070,5 +4277,161 @@ mod tests {
             cmds.as_slice(),
             [PlayerCommand::EnqueueBack(tracks)] if tracks.len() == 2
         ));
+    }
+
+    #[test]
+    fn pressing_d_dispatches_download_job_with_toast() {
+        let (_src, player) = deps();
+        let mut state = AppState {
+            tracks: vec![ytm_core::Track::stub("dl_track", "Download Track")],
+            selected: 0,
+            pane: Pane::Songs,
+            ..Default::default()
+        };
+
+        let task = dispatch_input(InputAction::Download, &mut state, &*player, &beh());
+
+        assert!(state.toasts.iter().any(|t| t.text.contains("Downloading")));
+        assert!(matches!(task, Some(Task::Download(_))));
+    }
+
+    #[test]
+    fn pressing_d_with_marked_tracks_dispatches_all_marked_tracks() {
+        let (_src, player) = deps();
+        let mut state = AppState {
+            tracks: vec![
+                ytm_core::Track::stub("t1", "Track 1"),
+                ytm_core::Track::stub("t2", "Track 2"),
+                ytm_core::Track::stub("t3", "Track 3"),
+            ],
+            selected: 0,
+            pane: Pane::Songs,
+            ..Default::default()
+        };
+        state.marked.insert(ytm_core::VideoId::from("t1"));
+        state.marked.insert(ytm_core::VideoId::from("t3"));
+
+        let task = dispatch_input(InputAction::Download, &mut state, &*player, &beh());
+
+        assert!(
+            state
+                .toasts
+                .iter()
+                .any(|t| t.text.contains("Downloading 2 tracks"))
+        );
+        assert!(state.marked.is_empty(), "marks must be cleared");
+        match task {
+            Some(Task::Download(tracks)) => {
+                assert_eq!(tracks.len(), 2);
+                assert_eq!(tracks[0].video_id.as_str(), "t1");
+                assert_eq!(tracks[1].video_id.as_str(), "t3");
+            }
+            other => panic!("expected Download task, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pressing_x_on_downloads_pane_removes_track_and_returns_delete_task() {
+        let (_src, player) = deps();
+        let mut state = AppState {
+            downloaded_tracks: vec![
+                ytm_core::Track::stub("t1", "Track 1"),
+                ytm_core::Track::stub("t2", "Track 2"),
+            ],
+            selected: 0,
+            pane: Pane::Downloads,
+            ..Default::default()
+        };
+
+        let task = dispatch_input(
+            InputAction::RemoveFromPlaylist,
+            &mut state,
+            &*player,
+            &beh(),
+        );
+
+        assert_eq!(state.downloaded_tracks.len(), 1);
+        assert_eq!(state.downloaded_tracks[0].video_id.as_str(), "t2");
+        assert!(
+            state
+                .toasts
+                .iter()
+                .any(|t| t.text.contains("Deleted \"Track 1\" from downloads"))
+        );
+        match task {
+            Some(Task::DeleteDownloads(tracks)) => {
+                assert_eq!(tracks.len(), 1);
+                assert_eq!(tracks[0].video_id.as_str(), "t1");
+            }
+            other => panic!("expected DeleteDownloads task, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn preload_from_cache_populates_downloaded_tracks() {
+        let dir = std::env::temp_dir().join(format!("ytm-dl-preload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = ytm_core::cache::Cache::open(&dir.join("cache.db")).unwrap();
+
+        let dt = ytm_core::DownloadedTrack {
+            video_id: ytm_core::VideoId::from("dl1"),
+            title: "Downloaded Title".into(),
+            artists: vec!["Artist".into()],
+            album: None,
+            duration_secs: 180,
+            thumbnail_url: None,
+            file_path: "/tmp/dl1.opus".into(),
+            file_size_bytes: 4096,
+            downloaded_at: 1000,
+        };
+        cache.save_downloaded_track(&dt).unwrap();
+
+        let mut state = AppState::default();
+        preload_from_cache(&cache, &mut state);
+
+        assert_eq!(state.downloaded_tracks.len(), 1);
+        assert_eq!(state.downloaded_tracks[0].video_id.as_str(), "dl1");
+        assert_eq!(state.downloaded_tracks[0].title, "Downloaded Title");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_writer_handles_save_and_remove_downloaded() {
+        let dir = std::env::temp_dir().join(format!("ytm-dl-writer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = ytm_core::cache::Cache::open(&dir.join("cache.db")).unwrap();
+
+        let dt = ytm_core::DownloadedTrack {
+            video_id: ytm_core::VideoId::from("w1"),
+            title: "Writer Test".into(),
+            artists: vec!["Artist".into()],
+            album: None,
+            duration_secs: 200,
+            thumbnail_url: None,
+            file_path: "/tmp/w1.opus".into(),
+            file_size_bytes: 1024,
+            downloaded_at: 2000,
+        };
+
+        CacheWork::SaveDownloaded(dt).run(&cache).unwrap();
+        assert!(
+            cache
+                .is_track_downloaded(&ytm_core::VideoId::from("w1"))
+                .unwrap()
+        );
+
+        CacheWork::RemoveDownloaded(ytm_core::VideoId::from("w1"))
+            .run(&cache)
+            .unwrap();
+        assert!(
+            !cache
+                .is_track_downloaded(&ytm_core::VideoId::from("w1"))
+                .unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

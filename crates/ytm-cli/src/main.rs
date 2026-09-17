@@ -593,10 +593,10 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
     // Fails cleanly here rather than mid-frame if libmpv is missing. yt-dlp gets the
     // same cookie file the API uses, or YouTube bot-checks every stream request. A
     // guest has none to give and runs bare, which works unless the IP is checked.
-    let cookie_file = if guest {
+    let cookie_path = if guest {
         None
     } else {
-        cfg.auth.cookie_file.clone()
+        cfg.auth.cookie_file.as_deref().map(config::expand_tilde)
     };
     let audio_storage = ytm_player::storage::AudioStorageManager::new(
         cfg.storage.download_dir(),
@@ -605,7 +605,7 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
     )
     .with_prefetch_count(cfg.storage.prefetch_count);
     let (player, player_events) =
-        ytm_player::actor::spawn_player(volume, cookie_file, Some(audio_storage))?;
+        ytm_player::actor::spawn_player(volume, cookie_path.clone(), Some(audio_storage.clone()))?;
     apply_startup_shuffle(&player, cfg.playback.shuffle);
 
     // A guest cannot enter the account panes, so `ui.start_pane` would strand
@@ -638,10 +638,12 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
     };
     // Skipped for a guest: the cache holds the previous session's library, and
     // those rows belong to panes a guest cannot open (FR-G9).
-    if let Some(c) = cache.as_ref()
-        && !guest
-    {
-        app_loop::preload_from_cache(c, &mut state);
+    if let Some(c) = cache.as_ref() {
+        if !guest {
+            app_loop::preload_from_cache(c, &mut state);
+        } else if let Ok(v) = c.get_downloaded_tracks() {
+            state.downloaded_tracks = v.into_iter().map(|dt| dt.to_track()).collect();
+        }
     }
     if guest {
         state.push_toast(
@@ -740,6 +742,8 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
         custom_theme,
         theme_file,
         auto_reload_theme,
+        Some(audio_storage),
+        cookie_path,
     )
     .await;
 

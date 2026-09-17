@@ -230,6 +230,21 @@ impl AppState {
                 self.downloaded_tracks = v;
                 self.loading = false;
             }
+            AppEvent::DownloadedTrackSaved(track) => {
+                let title = track.title.clone();
+                if !self
+                    .downloaded_tracks
+                    .iter()
+                    .any(|t| t.video_id == track.video_id)
+                {
+                    self.downloaded_tracks.insert(0, track);
+                }
+                self.push_toast(
+                    ToastKind::Success,
+                    &format!("Downloaded \"{title}\""),
+                    self.elapsed_ms,
+                );
+            }
             AppEvent::AlbumsLoaded(v) => {
                 self.albums = v;
                 self.loading = false;
@@ -3384,5 +3399,20 @@ mod tests {
         let mut state = AppState::default();
         state.set_pane(Pane::Downloads);
         assert_eq!(state.pane, Pane::Downloads);
+    }
+
+    #[test]
+    fn downloaded_track_saved_adds_to_downloaded_tracks_and_toasts() {
+        let mut state = AppState::default();
+        let track = Track::stub("dl1", "Downloaded Song");
+        state.apply(AppEvent::DownloadedTrackSaved(track.clone()));
+
+        assert_eq!(state.downloaded_tracks, vec![track]);
+        assert!(
+            state
+                .toasts
+                .iter()
+                .any(|t| t.text.contains("Downloaded \"Downloaded Song\""))
+        );
     }
 }
