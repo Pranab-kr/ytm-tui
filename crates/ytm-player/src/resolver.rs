@@ -80,7 +80,15 @@ pub fn ensure_netscape_cookie_jar(path: &std::path::Path) -> Option<std::path::P
     if content.starts_with("# Netscape") || content.starts_with("# HTTP Cookie File") {
         return Some(path.to_path_buf());
     }
-    let out = std::env::temp_dir().join(format!("ytm-cli-cookies-{}.txt", std::process::id()));
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish();
+    let out = std::env::temp_dir().join(format!(
+        "ytm-cli-cookies-{}-{:016x}.txt",
+        std::process::id(),
+        path_hash
+    ));
     let is_fresh = match (path.metadata(), out.metadata()) {
         (Ok(meta_in), Ok(meta_out)) => match (meta_in.modified(), meta_out.modified()) {
             (Ok(m_in), Ok(m_out)) => m_out >= m_in && meta_out.len() > 0,
