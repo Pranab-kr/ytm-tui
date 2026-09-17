@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a release tarball for GitHub Releases.
 #
-# Produces dist/ytm-cli-<version>-<arch>-<os>.tar.gz holding the binary, the
+# Produces dist/ytm-tui-<version>-<arch>-<os>.tar.gz holding the binary, the
 # README, the example config, and a checksum. Run the gate first — a release
 # built from a red tree is worse than no release.
 #

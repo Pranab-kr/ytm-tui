@@ -1,6 +1,6 @@
 //! Cookie-file lookup for the manual spike examples.
 //!
-//! Reads `~/.config/ytm-cli/config.toml` so the cookie path lives in one file
+//! Reads `~/.config/ytm-tui/config.toml` so the cookie path lives in one file
 //! outside the repo and never has to be pasted into a shell command, a
 //! transcript, or a process listing.
 //!
@@ -47,8 +47,8 @@ pub fn auth_choice() -> Result<AuthChoice, String> {
     Ok(AuthChoice::Cookie(file))
 }
 
-/// Duplicates `ytm-cli`'s `config::expand_tilde` on purpose: examples live in
-/// `ytm-core`, and importing from `ytm-cli` would invert the dependency
+/// Duplicates `ytm-tui`'s `config::expand_tilde` on purpose: examples live in
+/// `ytm-core`, and importing from the app crate would invert the dependency
 /// direction. Not worth a shared crate for nine lines; same for `config_path`.
 fn shellexpand_tilde(s: &str) -> String {
     match s.strip_prefix("~/") {
@@ -61,7 +61,7 @@ fn shellexpand_tilde(s: &str) -> String {
 }
 
 pub fn config_path() -> PathBuf {
-    directories::ProjectDirs::from("", "", "ytm-cli")
+    directories::ProjectDirs::from("", "", "ytm-tui")
         .map(|d| d.config_dir().join("config.toml"))
         .unwrap_or_else(|| PathBuf::from("config.toml"))
 }

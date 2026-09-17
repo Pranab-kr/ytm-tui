@@ -85,7 +85,7 @@ pub fn ensure_netscape_cookie_jar(path: &std::path::Path) -> Option<std::path::P
     path.hash(&mut hasher);
     let path_hash = hasher.finish();
     let out = std::env::temp_dir().join(format!(
-        "ytm-cli-cookies-{}-{:016x}.txt",
+        "ytm-tui-cookies-{}-{:016x}.txt",
         std::process::id(),
         path_hash
     ));

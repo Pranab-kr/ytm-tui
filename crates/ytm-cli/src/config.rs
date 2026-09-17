@@ -341,36 +341,14 @@ pub mod paths {
     use std::path::PathBuf;
 
     pub fn config_dir() -> PathBuf {
-        if let Some(d) = ProjectDirs::from("", "", "ytm-tui") {
-            let p = d.config_dir().to_path_buf();
-            if p.join("config.toml").exists() || p.join("cookies.txt").exists() {
-                return p;
-            }
-            if let Some(old) = ProjectDirs::from("", "", "ytm-cli") {
-                let old_p = old.config_dir().to_path_buf();
-                if old_p.join("config.toml").exists() || old_p.join("cookies.txt").exists() {
-                    return old_p;
-                }
-            }
-            return p;
-        }
-        PathBuf::from(".")
+        ProjectDirs::from("", "", "ytm-tui")
+            .map(|d| d.config_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
     pub fn cache_dir() -> PathBuf {
-        if let Some(d) = ProjectDirs::from("", "", "ytm-tui") {
-            let p = d.cache_dir().to_path_buf();
-            if p.exists() {
-                return p;
-            }
-            if let Some(old) = ProjectDirs::from("", "", "ytm-cli") {
-                let old_p = old.cache_dir().to_path_buf();
-                if old_p.exists() {
-                    return old_p;
-                }
-            }
-            return p;
-        }
-        PathBuf::from(".")
+        ProjectDirs::from("", "", "ytm-tui")
+            .map(|d| d.cache_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
     pub fn log_dir() -> PathBuf {
         cache_dir().join("logs")
@@ -399,6 +377,20 @@ mod tests {
         let (theme, name) = resolved.expect("a ~ path must resolve");
         assert_eq!(name, "custom");
         assert_eq!(theme.accent, ytm_tui::theme::parse_hex("#ff0000").unwrap());
+    }
+
+    #[test]
+    fn paths_point_to_ytm_tui() {
+        let cfg_dir = paths::config_dir();
+        let cache_dir = paths::cache_dir();
+        assert!(
+            cfg_dir.ends_with("ytm-tui"),
+            "expected ytm-tui in {cfg_dir:?}"
+        );
+        assert!(
+            cache_dir.ends_with("ytm-tui"),
+            "expected ytm-tui in {cache_dir:?}"
+        );
     }
 
     #[test]

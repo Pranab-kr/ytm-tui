@@ -805,7 +805,7 @@ mod tests {
     fn configured_cookie_keeps_the_normal_startup_path() {
         // A file that really exists: the check is about reachability, not the
         // presence of a config key that may point at nothing.
-        let dir = std::env::temp_dir().join("ytm-cli-guest-startup-test");
+        let dir = std::env::temp_dir().join("ytm-tui-guest-startup-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("cookies.txt");
         std::fs::write(&path, "SAPISID=example").unwrap();
@@ -818,7 +818,7 @@ mod tests {
     #[test]
     fn a_cookie_path_that_does_not_exist_still_starts_as_a_guest() {
         let mut cfg = config::Config::default();
-        cfg.auth.cookie_file = Some("/nonexistent/ytm-cli/cookies.txt".into());
+        cfg.auth.cookie_file = Some("/nonexistent/ytm-tui/cookies.txt".into());
         assert!(guest_startup(&cfg));
     }
 

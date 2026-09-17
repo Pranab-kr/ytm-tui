@@ -1,7 +1,7 @@
 //! Runtime state that survives a restart but is not configuration.
 //!
 //! Separate from `config.toml` on purpose: that file is hand-maintained and
-//! `ytm-cli config` promises never to overwrite it. This one is ours to rewrite.
+//! `ytm-tui config` promises never to overwrite it. This one is ours to rewrite.
 
 use std::path::{Path, PathBuf};
 

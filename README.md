@@ -107,7 +107,7 @@ To access your personal playlists, liked songs, and personalized recommendations
 4. **Hold Shift and click the reload button** (or press `Ctrl+Shift+R` / `Cmd+Shift+R`). *Tip:* A normal reload is often served from browser cache and will not show the `cookie:` header; holding Shift forces a clean reload so the full request headers appear.
 5. In the list of requests, click the first request to `music.youtube.com`. Under **Headers** → **Request Headers**, copy the entire value of the `cookie:` header (it starts with something like `VISITOR_INFO1_LIVE=...; SAPISID=...`).
 6. Paste that single line into a text file at:
-   - Linux: `~/.config/ytm-tui/cookies.txt` (or `~/.config/ytm-cli/cookies.txt`)
+   - Linux: `~/.config/ytm-tui/cookies.txt`
    - macOS: `~/Library/Application Support/ytm-tui/cookies.txt`
 7. Close the private browser window without logging out.
 8. Configure `ytm-tui` to use your cookie file:

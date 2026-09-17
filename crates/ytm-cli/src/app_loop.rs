@@ -549,7 +549,7 @@ pub async fn run_mutation(
 /// A temp id for an optimistic row, replaced by the server's on commit. Prefixed
 /// so a leaked one is obvious in a log rather than looking like a real id.
 fn temp_playlist_id(token: u64) -> ytm_core::PlaylistId {
-    ytm_core::PlaylistId::from(format!("ytm-cli-temp-{token}").as_str())
+    ytm_core::PlaylistId::from(format!("ytm-tui-temp-{token}").as_str())
 }
 
 /// Apply an open prompt and return the edit plus the API call it needs.
