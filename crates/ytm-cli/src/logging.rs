@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 /// dropping it stops the writer thread and loses buffered lines.
 pub fn init(dir: &Path) -> std::io::Result<WorkerGuard> {
     std::fs::create_dir_all(dir)?;
-    let appender = tracing_appender::rolling::daily(dir, "ytm-cli.log");
+    let appender = tracing_appender::rolling::daily(dir, "ytm-tui.log");
     let (writer, guard) = tracing_appender::non_blocking(appender);
     let filter = EnvFilter::try_from_env("YTM_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     // try_init rather than init so a second call in tests does not panic.

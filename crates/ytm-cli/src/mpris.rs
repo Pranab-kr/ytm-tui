@@ -95,8 +95,8 @@ pub fn update(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
 /// `AppState`, which the event loop owns.
 pub fn attach(tx: tokio::sync::mpsc::UnboundedSender<PlayerCommand>) -> Option<MediaControls> {
     let config = PlatformConfig {
-        dbus_name: "ytm_cli",
-        display_name: "ytm-cli",
+        dbus_name: "ytm_tui",
+        display_name: "ytm-tui",
         hwnd: None,
     };
     let mut controls = match MediaControls::new(config) {

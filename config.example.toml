@@ -1,14 +1,14 @@
-# ytm-cli configuration
+# ytm-tui configuration
 #
 # Copy to the platform config dir and edit:
-#   Linux:   ~/.config/ytm-cli/config.toml
-#   macOS:   ~/Library/Application Support/ytm-cli/config.toml
+#   Linux:   ~/.config/ytm-tui/config.toml
+#   macOS:   ~/Library/Application Support/ytm-tui/config.toml
 #
 # Every key below is shown with its built-in default, so a commented-out file
 # behaves exactly like no file at all. Uncomment a line to change it.
 #
 # Two ways in:
-#   ytm-cli config          write this file and open it in $EDITOR
+#   ytm-tui config          write this file and open it in $EDITOR
 #   ,                       same thing from inside the app
 # Keybindings and the theme reload when you save and exit — no restart.
 
@@ -33,7 +33,7 @@ kind = "cookie"
 #
 # The same file is used for playback — yt-dlp needs cookies too, and the app
 # converts the header into the format it wants automatically.
-cookie_file = "~/.config/ytm-cli/cookies.txt"
+cookie_file = "~/.config/ytm-tui/cookies.txt"
 
 [playback]
 volume = 70        # 0-100, the starting level; +/- changes are remembered
@@ -60,7 +60,7 @@ theme = "auto"
 
 # A full custom theme file wins over `theme` above. Keys: accent, fg, fg_dim,
 # fg_bright, bg_sel, error, success, and `preset` to start from a built-in.
-# theme_file = "~/.config/ytm-cli/theme.toml"
+# theme_file = "~/.config/ytm-tui/theme.toml"
 # Automatically reload `theme_file` when it changes on disk.
 # auto_reload_theme = false
 

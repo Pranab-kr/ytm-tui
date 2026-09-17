@@ -939,7 +939,7 @@ pub fn dispatch_input(
         // Diverted before the fall-through, which is what sets `should_quit`.
         A::Quit if behaviour.confirm_on_quit => {
             state.modal = Some(Modal::Confirm {
-                text: "Quit ytm-cli? (y/n)".to_owned(),
+                text: "Quit ytm-tui? (y/n)".to_owned(),
                 action: ConfirmAction::Quit,
             });
         }

@@ -340,19 +340,37 @@ pub mod paths {
     use directories::ProjectDirs;
     use std::path::PathBuf;
 
-    fn dirs() -> Option<ProjectDirs> {
-        ProjectDirs::from("", "", "ytm-cli")
-    }
-
     pub fn config_dir() -> PathBuf {
-        dirs()
-            .map(|d| d.config_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
+        if let Some(d) = ProjectDirs::from("", "", "ytm-tui") {
+            let p = d.config_dir().to_path_buf();
+            if p.join("config.toml").exists() || p.join("cookies.txt").exists() {
+                return p;
+            }
+            if let Some(old) = ProjectDirs::from("", "", "ytm-cli") {
+                let old_p = old.config_dir().to_path_buf();
+                if old_p.join("config.toml").exists() || old_p.join("cookies.txt").exists() {
+                    return old_p;
+                }
+            }
+            return p;
+        }
+        PathBuf::from(".")
     }
     pub fn cache_dir() -> PathBuf {
-        dirs()
-            .map(|d| d.cache_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
+        if let Some(d) = ProjectDirs::from("", "", "ytm-tui") {
+            let p = d.cache_dir().to_path_buf();
+            if p.exists() {
+                return p;
+            }
+            if let Some(old) = ProjectDirs::from("", "", "ytm-cli") {
+                let old_p = old.cache_dir().to_path_buf();
+                if old_p.exists() {
+                    return old_p;
+                }
+            }
+            return p;
+        }
+        PathBuf::from(".")
     }
     pub fn log_dir() -> PathBuf {
         cache_dir().join("logs")

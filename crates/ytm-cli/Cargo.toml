@@ -1,11 +1,12 @@
 [package]
 name = "ytm-cli"
-version = "0.1.2"
+version = "0.2.0"
+default-run = "ytm-tui"
 edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "ytm-cli"
+name = "ytm-tui"
 path = "src/main.rs"
 
 [dependencies]

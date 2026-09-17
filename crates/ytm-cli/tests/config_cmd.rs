@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_ytm-cli");
+const BIN: &str = env!("CARGO_BIN_EXE_ytm-tui");
 
 /// A unique empty directory. Cheaper than a dev-dependency for four tests.
 fn scratch(tag: &str) -> PathBuf {

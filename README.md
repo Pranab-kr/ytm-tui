@@ -1,4 +1,4 @@
-# ytm-cli
+# ytm-tui
 
 A fast, keyboard-driven YouTube Music client for your terminal, written in Rust and powered by `mpv`.
 
@@ -22,7 +22,7 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 
 ### Prerequisites
 
-`ytm-cli` requires **`mpv`** (for audio playback) and **`yt-dlp`** (for streaming/downloading audio).
+`ytm-tui` requires **`mpv`** (for audio playback) and **`yt-dlp`** (for streaming/downloading audio).
 
 - **Arch / Manjaro / EndeavourOS**:
   ```bash
@@ -48,17 +48,17 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 
 ---
 
-### Step 1: Install `ytm-cli`
+### Step 1: Install `ytm-tui`
 
 #### Option A: Download Pre-built Binary (Recommended)
 
-1. Go to the [**Releases**](https://github.com/Pranab-kr/ytm-cli/releases) page.
-2. Download the binary matching your operating system and CPU architecture (e.g., `ytm-cli-linux-x86_64.tar.gz`).
-3. Extract the archive and place `ytm-cli` in your PATH:
+1. Go to the [**Releases**](https://github.com/Pranab-kr/ytm-tui/releases) page.
+2. Download the binary matching your operating system and CPU architecture (e.g., `ytm-tui-v0.2.0-x86_64-linux.tar.gz`).
+3. Extract the archive and place `ytm-tui` (and optionally `ytm`) in your PATH:
    ```bash
-   tar -xzf ytm-cli-*.tar.gz
-   chmod +x ytm-cli
-   mv ytm-cli ~/.local/bin/   # or sudo mv ytm-cli /usr/local/bin/
+   tar -xzf ytm-tui-*.tar.gz
+   chmod +x ytm-tui ytm
+   mv ytm-tui ytm ~/.local/bin/   # or sudo mv ytm-tui ytm /usr/local/bin/
    ```
 
 #### Option B: Build from Source (via Cargo)
@@ -66,10 +66,10 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 If you have Rust installed:
 
 ```bash
-git clone https://github.com/Pranab-kr/ytm-cli.git
-cd ytm-cli
+git clone https://github.com/Pranab-kr/ytm-tui.git
+cd ytm-tui
 cargo build --release
-cp target/release/ytm-cli ~/.local/bin/
+cp target/release/ytm-tui target/release/ytm ~/.local/bin/
 ```
 
 ---
@@ -79,7 +79,7 @@ cp target/release/ytm-cli ~/.local/bin/
 You can launch the app immediately:
 
 ```bash
-ytm-cli
+ytm-tui   # or simply `ytm`
 ```
 
 ---
@@ -88,7 +88,7 @@ ytm-cli
 
 ### 1. Guest Mode (No Login Required)
 
-If you launch `ytm-cli` without signing in, it runs in **Guest Mode**. You can immediately:
+If you launch `ytm-tui` without signing in, it runs in **Guest Mode**. You can immediately:
 - Search for any song, album, or artist (`6` or `S`)
 - Stream tracks and manage your current queue
 - Download songs for offline listening (`d`)
@@ -107,24 +107,24 @@ To access your personal playlists, liked songs, and personalized recommendations
 4. **Hold Shift and click the reload button** (or press `Ctrl+Shift+R` / `Cmd+Shift+R`). *Tip:* A normal reload is often served from browser cache and will not show the `cookie:` header; holding Shift forces a clean reload so the full request headers appear.
 5. In the list of requests, click the first request to `music.youtube.com`. Under **Headers** → **Request Headers**, copy the entire value of the `cookie:` header (it starts with something like `VISITOR_INFO1_LIVE=...; SAPISID=...`).
 6. Paste that single line into a text file at:
-   - Linux: `~/.config/ytm-cli/cookies.txt`
-   - macOS: `~/Library/Application Support/ytm-cli/cookies.txt`
+   - Linux: `~/.config/ytm-tui/cookies.txt` (or `~/.config/ytm-cli/cookies.txt`)
+   - macOS: `~/Library/Application Support/ytm-tui/cookies.txt`
 7. Close the private browser window without logging out.
-8. Configure `ytm-cli` to use your cookie file:
+8. Configure `ytm-tui` to use your cookie file:
    ```bash
-   ytm-cli config
+   ytm-tui config
    ```
    Set:
    ```toml
    [auth]
    kind = "cookie"
-   cookie_file = "~/.config/ytm-cli/cookies.txt"
+   cookie_file = "~/.config/ytm-tui/cookies.txt"
    ```
 9. Verify your setup:
    ```bash
-   ytm-cli playlists
+   ytm-tui playlists
    ```
-   If it lists your playlists, you are all set! Run `ytm-cli` to start listening.
+   If it lists your playlists, you are all set! Run `ytm-tui` to start listening.
 
 ---
 
@@ -190,13 +190,13 @@ Press `?` inside the app at any time to see the live keybindings list.
 
 - Press `d` on any track (or highlighted visual selection) to download it.
 - Switch to tab **8 (Downloads)** to view all downloaded songs.
-- When you play a song that has been downloaded, `ytm-cli` automatically plays the local file with **zero network latency**, even if you start playback from a remote playlist or search.
+- When you play a song that has been downloaded, `ytm-tui` automatically plays the local file with **zero network latency**, even if you start playback from a remote playlist or search.
 
 ---
 
 ## Configuration
 
-Run `ytm-cli config` to edit your configuration. The generated file includes all available options with descriptions, commented out with their defaults:
+Run `ytm-tui config` to edit your configuration. The generated file includes all available options with descriptions, commented out with their defaults:
 
 - Change default startup tab (`playlists`, `home`, `songs`, etc.)
 - Adjust volume steps and seek increments
@@ -209,4 +209,4 @@ Run `ytm-cli config` to edit your configuration. The generated file includes all
 
 ## Terms of Service & Privacy
 
-`ytm-cli` connects to YouTube Music's internal web API and uses `yt-dlp` for media streaming. This software is intended for personal and educational use. There is **no telemetry, no tracking, and no external data collection**—all tokens, cookies, cache files, and downloads stay strictly on your local machine.
+`ytm-tui` connects to YouTube Music's internal web API and uses `yt-dlp` for media streaming. This software is intended for personal and educational use. There is **no telemetry, no tracking, and no external data collection**—all tokens, cookies, cache files, and downloads stay strictly on your local machine.
