@@ -24,9 +24,7 @@ cargo build --release
 echo "==> packaging ${NAME}"
 rm -rf "dist/${NAME}"
 mkdir -p "dist/${NAME}"
-cp target/release/ytm-tui "dist/${NAME}/ytm-tui"
-cp target/release/ytm-tui "dist/${NAME}/ytm"
-cp target/release/ytm-tui "dist/${NAME}/ytm-cli"
+cp target/release/ytm-tui "dist/${NAME}/"
 cp README.md config.example.toml "dist/${NAME}/"
 # The binary links libmpv at runtime, so say so where someone will read it.
 cat > "dist/${NAME}/INSTALL.txt" <<'TXT'
