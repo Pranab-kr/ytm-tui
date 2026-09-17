@@ -280,6 +280,122 @@ fn try_spawn(
         }
         return;
     }
+    if let Task::EnqueuePlaylist {
+        id,
+        title,
+        play_next,
+    } = &task
+    {
+        let play_next = *play_next;
+        let title = title.clone();
+        let id = id.clone();
+        if let Some(cache) = cache
+            && let Ok(tracks) = cache.load_playlist_tracks(&id)
+            && !tracks.is_empty()
+        {
+            state.loading = false;
+            let where_to = if play_next {
+                "playing next"
+            } else {
+                "added to queue"
+            };
+            let toast = match tracks.len() {
+                1 => format!("{where_to}: {title} (1 track)"),
+                n => format!("{where_to}: {title} ({n} tracks)"),
+            };
+            let _ = tx.send(AppEvent::EnqueueTracks {
+                tracks,
+                play_next,
+                toast: Some(toast),
+            });
+            return;
+        }
+        let Some(src) = source.clone() else {
+            state.loading = false;
+            state.push_toast(ToastKind::Info, "still connecting…", state.elapsed_ms);
+            return;
+        };
+        let tx = tx.clone();
+        let writer = cache_writer.cloned();
+        tokio::spawn(async move {
+            match src.playlist_tracks(id.clone()).await {
+                Ok(tracks) => {
+                    if tracks.is_empty() {
+                        let _ = tx.send(AppEvent::Error(format!("playlist \"{title}\" is empty")));
+                        return;
+                    }
+                    if let Some(w) = &writer {
+                        let _ = w.send(CacheWork::PlaylistTracks {
+                            id: id.clone(),
+                            tracks: tracks.clone(),
+                        });
+                    }
+                    let where_to = if play_next {
+                        "playing next"
+                    } else {
+                        "added to queue"
+                    };
+                    let toast = match tracks.len() {
+                        1 => format!("{where_to}: {title} (1 track)"),
+                        n => format!("{where_to}: {title} ({n} tracks)"),
+                    };
+                    let _ = tx.send(AppEvent::EnqueueTracks {
+                        tracks,
+                        play_next,
+                        toast: Some(toast),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Error(format!("could not load playlist: {e}")));
+                }
+            }
+        });
+        return;
+    }
+    if let Task::EnqueueAlbum {
+        id,
+        title,
+        play_next,
+    } = &task
+    {
+        let play_next = *play_next;
+        let title = title.clone();
+        let id = id.clone();
+        let Some(src) = source.clone() else {
+            state.loading = false;
+            state.push_toast(ToastKind::Info, "still connecting…", state.elapsed_ms);
+            return;
+        };
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            match src.album_tracks(id).await {
+                Ok(tracks) => {
+                    if tracks.is_empty() {
+                        let _ = tx.send(AppEvent::Error(format!("album \"{title}\" is empty")));
+                        return;
+                    }
+                    let where_to = if play_next {
+                        "playing next"
+                    } else {
+                        "added to queue"
+                    };
+                    let toast = match tracks.len() {
+                        1 => format!("{where_to}: {title} (1 track)"),
+                        n => format!("{where_to}: {title} ({n} tracks)"),
+                    };
+                    let _ = tx.send(AppEvent::EnqueueTracks {
+                        tracks,
+                        play_next,
+                        toast: Some(toast),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Error(format!("could not load album: {e}")));
+                }
+            }
+        });
+        return;
+    }
     if let Task::OpenPlaylist(id) = &task
         && let Some(cache) = cache
     {
@@ -306,6 +422,16 @@ pub enum Task {
     LoadAlbums,
     LoadArtists,
     OpenPlaylist(ytm_core::PlaylistId),
+    EnqueuePlaylist {
+        id: ytm_core::PlaylistId,
+        title: String,
+        play_next: bool,
+    },
+    EnqueueAlbum {
+        id: ytm_core::AlbumId,
+        title: String,
+        play_next: bool,
+    },
     /// An artist's top tracks (FR-B7). Carries the name so the heading can be
     /// set without looking it up — an artist opened from search is not in
     /// `artists`, so there would be nothing to look up.
@@ -592,12 +718,6 @@ pub fn targets_for_add(state: &AppState) -> Vec<ytm_core::VideoId> {
 /// Tracks rather than ids because the player queues `Track`s, and re-looking them
 /// up by id would be a second source of truth.
 fn queue_targets(state: &AppState) -> Vec<ytm_core::Track> {
-    if state.pane == Pane::Playlists
-        && state.open_playlist.is_none()
-        && let Some(playlist) = state.playlists.get(state.selected)
-    {
-        return state.tracks_for_playlist(&playlist.id);
-    }
     if !state.marked.is_empty() {
         return state
             .track_rows()
@@ -923,28 +1043,31 @@ pub fn dispatch_input(
         // Both honour a marked selection, so `V` over a run then `a` queues the
         // whole range rather than only the row under the cursor.
         A::AddToQueue | A::PlayNext => {
-            let playlist_title = if state.pane == Pane::Playlists && state.open_playlist.is_none() {
-                state.playlists.get(state.selected).map(|p| p.title.clone())
-            } else {
-                None
-            };
+            if let Some(p) = state.selected_playlist() {
+                return start(
+                    state,
+                    Task::EnqueuePlaylist {
+                        id: p.id.clone(),
+                        title: p.title.clone(),
+                        play_next: action == A::PlayNext,
+                    },
+                );
+            }
+            if let Some(a) = state.selected_album() {
+                return start(
+                    state,
+                    Task::EnqueueAlbum {
+                        id: a.id.clone(),
+                        title: a.title.clone(),
+                        play_next: action == A::PlayNext,
+                    },
+                );
+            }
             let tracks = queue_targets(state);
             if tracks.is_empty() {
                 return None;
             }
-            let where_to = if action == A::PlayNext {
-                "playing next"
-            } else {
-                "added to queue"
-            };
-            let msg = if let Some(title) = playlist_title {
-                match tracks.len() {
-                    1 => format!("{where_to}: {title} (1 track)"),
-                    n => format!("{where_to}: {title} ({n} tracks)"),
-                }
-            } else {
-                enqueue_message(&tracks, action == A::PlayNext)
-            };
+            let msg = enqueue_message(&tracks, action == A::PlayNext);
             let cmd = if action == A::PlayNext {
                 PlayerCommand::EnqueueNext(tracks)
             } else {
@@ -1562,6 +1685,24 @@ pub async fn run(
                     art.insert(&url, *image);
                     continue;
                 }
+                if let AppEvent::EnqueueTracks {
+                    tracks,
+                    play_next,
+                    toast,
+                } = ae
+                {
+                    state.loading = false;
+                    let cmd = if play_next {
+                        PlayerCommand::EnqueueNext(tracks)
+                    } else {
+                        PlayerCommand::EnqueueBack(tracks)
+                    };
+                    send(&player, cmd);
+                    if let Some(msg) = toast {
+                        state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
+                    }
+                    continue;
+                }
                 state.apply(ae);
             }
 
@@ -1711,7 +1852,11 @@ fn spawn_task(task: Task, source: Arc<dyn MusicSource>, tx: mpsc::UnboundedSende
             // Failures come back as MutationFailed, not Error: the token has to
             // survive so `rollback` reverts the right edit.
             Task::Mutate { token, task } => run_mutation(token, task, source.clone()).await,
-            Task::LoadDownloads | Task::Download(_) | Task::DeleteDownloads(_) => return,
+            Task::LoadDownloads
+            | Task::Download(_)
+            | Task::DeleteDownloads(_)
+            | Task::EnqueuePlaylist { .. }
+            | Task::EnqueueAlbum { .. } => return,
         };
         match &ev {
             AppEvent::Error(m) => tracing::warn!(error = %m, "background task failed"),
@@ -4253,7 +4398,7 @@ mod tests {
     }
 
     #[test]
-    fn pressing_add_to_queue_on_playlist_row_enqueues_playlist_tracks() {
+    fn pressing_add_to_queue_on_playlist_row_dispatches_enqueue_playlist() {
         let (_src, player) = deps();
         let mut state = AppState {
             pane: Pane::Playlists,
@@ -4263,20 +4408,143 @@ mod tests {
                 track_count: Some(2),
                 ..ytm_core::Playlist::stub("p1", "Test Playlist")
             }],
-            tracks: vec![
-                ytm_core::Track::stub("t1", "Track 1"),
-                ytm_core::Track::stub("t2", "Track 2"),
-            ],
             ..Default::default()
         };
 
-        dispatch_input(InputAction::AddToQueue, &mut state, &*player, &beh());
+        let task = dispatch_input(InputAction::AddToQueue, &mut state, &*player, &beh());
 
-        let cmds = player.commands();
-        assert!(matches!(
-            cmds.as_slice(),
-            [PlayerCommand::EnqueueBack(tracks)] if tracks.len() == 2
-        ));
+        assert_eq!(
+            task,
+            Some(Task::EnqueuePlaylist {
+                id: ytm_core::PlaylistId::from("p1"),
+                title: "Test Playlist".to_owned(),
+                play_next: false,
+            })
+        );
+        assert!(state.loading);
+    }
+
+    #[test]
+    fn pressing_play_next_on_playlist_row_dispatches_enqueue_playlist_next() {
+        let (_src, player) = deps();
+        let mut state = AppState {
+            pane: Pane::Playlists,
+            open_playlist: None,
+            selected: 0,
+            playlists: vec![ytm_core::Playlist {
+                track_count: Some(2),
+                ..ytm_core::Playlist::stub("p1", "Test Playlist")
+            }],
+            ..Default::default()
+        };
+
+        let task = dispatch_input(InputAction::PlayNext, &mut state, &*player, &beh());
+
+        assert_eq!(
+            task,
+            Some(Task::EnqueuePlaylist {
+                id: ytm_core::PlaylistId::from("p1"),
+                title: "Test Playlist".to_owned(),
+                play_next: true,
+            })
+        );
+        assert!(state.loading);
+    }
+
+    #[test]
+    fn try_spawn_enqueue_playlist_from_cache() {
+        let dir = std::env::temp_dir().join(format!("ytm-playlist-cache-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let cache = ytm_core::cache::Cache::open(&dir.join("c.db")).unwrap();
+        let pid = ytm_core::PlaylistId::from("p1");
+        cache
+            .save_playlist_tracks(&pid, &[ytm_core::Track::stub("t1", "Track 1")])
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = AppState {
+            loading: true,
+            ..Default::default()
+        };
+
+        try_spawn(
+            Task::EnqueuePlaylist {
+                id: pid,
+                title: "Test Playlist".to_owned(),
+                play_next: false,
+            },
+            &None,
+            &tx,
+            &mut state,
+            Some(&cache),
+            None,
+            None,
+            None,
+        );
+
+        assert!(!state.loading);
+        let ev = rx.try_recv().unwrap();
+        match ev {
+            AppEvent::EnqueueTracks {
+                tracks,
+                play_next,
+                toast,
+            } => {
+                assert_eq!(tracks.len(), 1);
+                assert!(!play_next);
+                assert!(toast.unwrap().contains("Test Playlist"));
+            }
+            other => panic!("expected EnqueueTracks, got {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn try_spawn_enqueue_playlist_from_source() {
+        let (src, _player) = deps();
+        let src = Arc::new(
+            Arc::into_inner(src)
+                .unwrap()
+                .with_tracks(vec![ytm_core::Track::stub("t1", "Track 1")]),
+        );
+        let pid = ytm_core::PlaylistId::from("p1");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = AppState {
+            loading: true,
+            ..Default::default()
+        };
+
+        try_spawn(
+            Task::EnqueuePlaylist {
+                id: pid,
+                title: "Test Playlist".to_owned(),
+                play_next: true,
+            },
+            &Some(src),
+            &tx,
+            &mut state,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let ev = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match ev {
+            AppEvent::EnqueueTracks {
+                tracks,
+                play_next,
+                toast,
+            } => {
+                assert_eq!(tracks.len(), 1);
+                assert!(play_next);
+                assert!(toast.unwrap().contains("Test Playlist"));
+            }
+            other => panic!("expected EnqueueTracks, got {:?}", other),
+        }
     }
 
     #[test]

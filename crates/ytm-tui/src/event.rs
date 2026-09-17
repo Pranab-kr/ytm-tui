@@ -92,6 +92,11 @@ pub enum AppEvent {
     LibrarySongsLoaded(Vec<Track>),
     DownloadedTracksLoaded(Vec<Track>),
     DownloadedTrackSaved(Track),
+    EnqueueTracks {
+        tracks: Vec<Track>,
+        play_next: bool,
+        toast: Option<String>,
+    },
     AlbumsLoaded(Vec<Album>),
     ArtistsLoaded(Vec<Artist>),
     PlaylistTracksLoaded {

@@ -301,6 +301,9 @@ impl AppState {
             // backend. State ignores them so `apply` stays a pure reducer.
             AppEvent::ArtLoaded { .. } | AppEvent::ArtFailed { .. } => {}
 
+            // Enqueueing is dispatched to the player and toasted by the event loop.
+            AppEvent::EnqueueTracks { .. } => {}
+
             AppEvent::MutationOk {
                 token,
                 real_id,
@@ -314,7 +317,10 @@ impl AppState {
                 self.push_toast(ToastKind::Error, &message, self.elapsed_ms);
             }
 
-            AppEvent::Error(m) => self.push_toast(ToastKind::Error, &m, self.elapsed_ms),
+            AppEvent::Error(m) => {
+                self.loading = false;
+                self.push_toast(ToastKind::Error, &m, self.elapsed_ms);
+            }
             AppEvent::LoginNeeded { user_code, url } => {
                 self.modal = Some(Modal::Login { user_code, url });
             }

@@ -107,7 +107,8 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
                 // needs its own signal: the reversed bg says "the cursor is here",
                 // the bold accent bar says "this is the pane you're in".
                 let on_cursor = selected && s.focus == Focus::Sidebar;
-                let bg = |st: Style| if on_cursor { st.bg(t.bg_sel) } else { st };
+                let is_highlighted = active || on_cursor;
+                let bg = |st: Style| if is_highlighted { st.bg(t.bg_sel) } else { st };
 
                 let mut label_style = Style::default().fg(source_label_color(pane, active, s, t));
                 if active {
@@ -209,5 +210,24 @@ mod tests {
         assert_eq!(source_at_row(1), None, "row 1 is the spacer after Home");
         assert_eq!(source_at_row(2), Some(1), "row 2 is Playlists");
         assert_eq!(source_at_row(99), None, "past the end is nothing");
+    }
+
+    #[test]
+    fn active_sidebar_row_renders_with_highlighted_background() {
+        let state = AppState {
+            pane: Pane::Playlists,
+            ..Default::default()
+        };
+        let theme = Theme::preset("tokyonight").unwrap();
+        let backend = ratatui::backend::TestBackend::new(20, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &theme))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Row 2 in LAYOUT is Playlists (row 0 is Home, row 1 is Spacer, row 2 is Playlists)
+        let cell = buffer.cell((2, 2)).unwrap();
+        assert_eq!(cell.bg, theme.bg_sel);
     }
 }

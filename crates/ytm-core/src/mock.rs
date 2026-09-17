@@ -42,6 +42,11 @@ impl MockSource {
         self
     }
 
+    pub fn with_tracks(self, t: Vec<Track>) -> Self {
+        self.inner.lock().unwrap().tracks = t;
+        self
+    }
+
     pub fn with_album_tracks(self, t: Vec<Track>) -> Self {
         self.inner.lock().unwrap().album_tracks = t;
         self
