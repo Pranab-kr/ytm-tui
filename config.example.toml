@@ -69,6 +69,13 @@ seek_step_secs = 5    # how far f/b jump
 volume_step = 5       # how much +/- move the volume
 confirm_on_quit = false
 
+[storage]
+# Directory where permanently downloaded songs are kept.
+# Tilde expansion (~/...) is supported.
+# download_dir = "~/Music/ytm"
+cache_size_mb = 1024  # max MB for lookahead cache
+prefetch_count = 2    # number of queue tracks to prefetch ahead
+
 # Rebind any action to a single character. Action names are the snake_case forms
 # below; a binding is exclusive, so setting one clears that action's default.
 [keys]

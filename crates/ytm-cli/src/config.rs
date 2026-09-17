@@ -178,6 +178,46 @@ impl Default for BehaviourConfig {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    pub download_dir: Option<PathBuf>,
+    pub cache_size_mb: u64,
+    pub prefetch_count: usize,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            download_dir: None,
+            cache_size_mb: 1024,
+            prefetch_count: 2,
+        }
+    }
+}
+
+impl StorageConfig {
+    /// Return the resolved download directory:
+    /// If configured, expand leading `~/` if present.
+    /// If unset, default to `~/Music/ytm` or system audio directory.
+    #[allow(dead_code)]
+    pub fn download_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.download_dir {
+            expand_tilde(dir)
+        } else if let Some(user_dirs) = directories::UserDirs::new() {
+            if let Some(audio) = user_dirs.audio_dir() {
+                audio.join("ytm")
+            } else {
+                user_dirs.home_dir().join("Music").join("ytm")
+            }
+        } else if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join("Music").join("ytm")
+        } else {
+            PathBuf::from("./downloads")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -188,6 +228,7 @@ pub struct Config {
     pub playback: PlaybackConfig,
     pub ui: UiConfig,
     pub behaviour: BehaviourConfig,
+    pub storage: StorageConfig,
     /// Raw `[keys]` table, handed to `KeyMap::from_toml_str` as-is so the keymap
     /// owns action-name parsing rather than duplicating it here.
     #[serde(default)]
@@ -536,5 +577,39 @@ theme = "gruvbox""#,
 
         let c = Config::from_toml_str("[ui]\nauto_reload_theme = true").unwrap();
         assert!(c.ui.auto_reload_theme);
+    }
+
+    #[test]
+    fn storage_config_parses_with_custom_values_and_defaults() {
+        let toml = r#"
+            [storage]
+            download_dir = "~/Music/offline"
+            cache_size_mb = 2048
+            prefetch_count = 3
+        "#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.storage.cache_size_mb, 2048);
+        assert_eq!(cfg.storage.prefetch_count, 3);
+        assert_eq!(
+            cfg.storage.download_dir,
+            Some(PathBuf::from("~/Music/offline"))
+        );
+    }
+
+    #[test]
+    fn storage_config_defaults_are_sensible() {
+        let cfg = Config::default();
+        assert_eq!(cfg.storage.cache_size_mb, 1024);
+        assert_eq!(cfg.storage.prefetch_count, 2);
+    }
+
+    #[test]
+    fn storage_config_download_dir_resolves_sensibly() {
+        let mut cfg = StorageConfig::default();
+        let default_dir = cfg.download_dir();
+        assert!(default_dir.ends_with("ytm") || default_dir.ends_with("downloads"));
+
+        cfg.download_dir = Some(PathBuf::from("/tmp/custom_ytm"));
+        assert_eq!(cfg.download_dir(), PathBuf::from("/tmp/custom_ytm"));
     }
 }
