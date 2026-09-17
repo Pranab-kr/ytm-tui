@@ -129,7 +129,9 @@ impl AudioStorageManager {
         let mut cmd = std::process::Command::new("yt-dlp");
         cmd.args(["-f", "bestaudio", "--no-playlist", "--no-warnings", "-o"]);
         cmd.arg(target_path.as_os_str());
-        if let Some(jar) = cookie_jar {
+        let effective_jar = cookie_jar.and_then(crate::resolver::ensure_netscape_cookie_jar);
+        let jar_to_use = effective_jar.as_deref().or(cookie_jar);
+        if let Some(jar) = jar_to_use {
             cmd.arg("--cookies").arg(jar.as_os_str());
         }
         cmd.arg(&url);
@@ -205,6 +207,36 @@ mod tests {
         mgr.prune_lru(800).unwrap();
         assert!(!f1.exists() || !f2.exists());
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn download_track_sync_converts_raw_cookie_header_file() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-storage-test-3-{}", nanos));
+        let cookie_file = tmp.join("cookies.txt");
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            &cookie_file,
+            b"YSC=test_ysc; VISITOR_INFO1_LIVE=test_visitor\n",
+        )
+        .unwrap();
+
+        let mgr = AudioStorageManager::new(dl_dir.clone(), cache_dir, 1024);
+        let dest = dl_dir.join("test.opus");
+        let res =
+            mgr.download_track_sync(&VideoId::from("invalid_test_id"), &dest, Some(&cookie_file));
+        if let Err(crate::resolver::ResolveError::Failed(msg)) = res {
+            assert!(
+                !msg.contains("does not look like a Netscape format cookies file"),
+                "yt-dlp rejected raw cookie header file: {msg}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

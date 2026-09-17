@@ -70,6 +70,41 @@ impl Default for StreamResolver {
     }
 }
 
+/// Ensure the cookie file is in Netscape format suitable for `yt-dlp --cookies`.
+/// If the file is already a Netscape cookie jar, returns the path unchanged.
+/// If it's a raw `Cookie:` header, converts it and writes a temp Netscape file.
+pub fn ensure_netscape_cookie_jar(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return None;
+    };
+    if content.starts_with("# Netscape") || content.starts_with("# HTTP Cookie File") {
+        return Some(path.to_path_buf());
+    }
+    let out = std::env::temp_dir().join(format!("ytm-cli-cookies-{}.txt", std::process::id()));
+    let is_fresh = match (path.metadata(), out.metadata()) {
+        (Ok(meta_in), Ok(meta_out)) => match (meta_in.modified(), meta_out.modified()) {
+            (Ok(m_in), Ok(m_out)) => m_out >= m_in && meta_out.len() > 0,
+            _ => false,
+        },
+        _ => false,
+    };
+    if is_fresh {
+        return Some(out);
+    }
+    let jar = netscape_from_header(&content)?;
+    if std::fs::write(&out, jar).is_ok() {
+        // Readable only by this user: it holds live session cookies.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600));
+        }
+        Some(out)
+    } else {
+        None
+    }
+}
+
 impl StreamResolver {
     pub fn new() -> Self {
         Self {
@@ -82,20 +117,7 @@ impl StreamResolver {
     /// once and reused rather than converted per resolve. Failure is silent: it
     /// degrades to the unauthenticated path, which yt-dlp reports itself.
     pub fn use_cookie_header_file(&self, path: &std::path::Path) {
-        let Ok(header) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let Some(jar) = netscape_from_header(&header) else {
-            return;
-        };
-        let out = std::env::temp_dir().join(format!("ytm-cli-cookies-{}.txt", std::process::id()));
-        if std::fs::write(&out, jar).is_ok() {
-            // Readable only by this user: it holds live session cookies.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600));
-            }
+        if let Some(out) = ensure_netscape_cookie_jar(path) {
             *self.cookie_jar.lock().unwrap() = Some(out);
         }
     }
@@ -307,5 +329,34 @@ mod tests {
         let r = StreamResolver::new();
         r.use_cookie_header_file(std::path::Path::new("/nonexistent/cookies.txt"));
         assert!(r.cookie_jar.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn ensure_netscape_cookie_jar_converts_raw_header_and_preserves_netscape() {
+        let tmp = std::env::temp_dir().join(format!("ytm-cookie-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // 1. Raw header
+        let raw_file = tmp.join("raw_cookies.txt");
+        std::fs::write(&raw_file, "SID=abc12345; HSID=xyz987").unwrap();
+        let jar_path = ensure_netscape_cookie_jar(&raw_file).expect("should convert raw header");
+        assert!(jar_path.exists());
+        let content = std::fs::read_to_string(&jar_path).unwrap();
+        assert!(content.starts_with("# Netscape HTTP Cookie File"));
+        assert!(content.contains("SID\tabc12345"));
+
+        // 2. Netscape format
+        let netscape_file = tmp.join("netscape_cookies.txt");
+        std::fs::write(
+            &netscape_file,
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tabc12345\n",
+        )
+        .unwrap();
+        let jar_path2 =
+            ensure_netscape_cookie_jar(&netscape_file).expect("should keep netscape file");
+        assert_eq!(jar_path2, netscape_file);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
