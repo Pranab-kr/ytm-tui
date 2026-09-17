@@ -129,10 +129,53 @@ impl Actor {
         self.set_state(PlaybackState::Loading);
         self.emit(PlayerEvent::TrackChanged(Some(track.clone())));
 
-        let local_path = self
+        let mut local_path = self
             .storage
             .as_ref()
             .and_then(|s| s.find_local_audio(&track.video_id));
+
+        // If not in local storage yet, check if it's currently being prefetched in the background.
+        if local_path.is_none() {
+            let is_prefetching = match self.active_prefetches.lock() {
+                Ok(g) => g.contains(&track.video_id),
+                Err(p) => p.into_inner().contains(&track.video_id),
+            };
+
+            if is_prefetching {
+                let start_wait = std::time::Instant::now();
+                while start_wait.elapsed().as_secs() < 15 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let still_active = match self.active_prefetches.lock() {
+                        Ok(g) => g.contains(&track.video_id),
+                        Err(p) => p.into_inner().contains(&track.video_id),
+                    };
+                    if !still_active {
+                        break;
+                    }
+                }
+                local_path = self
+                    .storage
+                    .as_ref()
+                    .and_then(|s| s.find_local_audio(&track.video_id));
+            }
+        }
+
+        // If still not in local storage and storage is enabled, download it directly.
+        if local_path.is_none()
+            && let Some(storage) = self.storage.as_ref()
+        {
+            let target_path = storage
+                .cache_dir()
+                .join(format!("{}.opus", track.video_id.as_str()));
+            let cookie_jar = self.resolver.cookie_jar();
+            if storage
+                .download_track_sync(&track.video_id, &target_path, cookie_jar.as_deref())
+                .is_ok()
+            {
+                let _ = storage.prune_cache();
+                local_path = Some(target_path);
+            }
+        }
 
         if let Some(path) = local_path {
             if let Err(e) = self.mpv.load(path.to_str().unwrap_or_default()) {
@@ -494,12 +537,21 @@ fn run_actor(
         //    Borrow-scoped: `ev` borrows from mpv, so decide here and act after.
         let mut ended: Option<EndReason> = None;
         let mut loaded = false;
-        if let Some(Ok(ev)) = actor.mpv.poll_event(0.1) {
-            use libmpv2::events::Event as E;
-            match ev {
-                E::EndFile(reason) => ended = Some(map_end_reason(reason)),
-                E::FileLoaded => loaded = true,
-                _ => {}
+        let mut first = true;
+        while let Some(res) = actor.mpv.poll_event(if first { 0.1 } else { 0.0 }) {
+            first = false;
+            match res {
+                Ok(ev) => {
+                    use libmpv2::events::Event as E;
+                    match ev {
+                        E::EndFile(reason) => ended = Some(map_end_reason(reason)),
+                        E::FileLoaded => loaded = true,
+                        _ => {}
+                    }
+                }
+                Err(_) => {
+                    ended = Some(EndReason::Error);
+                }
             }
         }
 
@@ -621,5 +673,199 @@ mod tests {
         assert!(storage.find_local_audio(&id2).is_none());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn play_track_waits_for_active_prefetch_to_complete() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-wait-test-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir.clone(), 1024);
+        let id = VideoId::from("prefetch_track");
+        let active_set =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        active_set.lock().unwrap().insert(id.clone());
+
+        let active_clone = std::sync::Arc::clone(&active_set);
+        let cache_file = cache_dir.join("prefetch_track.opus");
+        let id_clone = id.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::write(&cache_file, b"test opus content").unwrap();
+            active_clone.lock().unwrap().remove(&id_clone);
+        });
+
+        let mut local_path = storage.find_local_audio(&id);
+        if local_path.is_none() {
+            let is_prefetching = active_set.lock().unwrap().contains(&id);
+            if is_prefetching {
+                let start_wait = std::time::Instant::now();
+                while start_wait.elapsed().as_secs() < 5 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    if !active_set.lock().unwrap().contains(&id) {
+                        break;
+                    }
+                }
+                local_path = storage.find_local_audio(&id);
+            }
+        }
+
+        assert!(
+            local_path.is_some(),
+            "local_path should be found after prefetch finishes"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    #[ignore = "reproduction test"]
+    async fn natural_track_transition_to_uncached_track() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-repro-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Create t1.wav (0.2s)
+        let t1_path = cache_dir.join("t1.opus");
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=mono",
+                "-t",
+                "0.2",
+                t1_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024);
+        let cookie_file = std::path::PathBuf::from("/home/pranab/.config/ytm-tui/cookies.txt");
+
+        let (player, mut ev_rx) = spawn_player(100, Some(cookie_file), Some(storage)).unwrap();
+
+        let track1 = Track::stub("t1", "Track 1 (short)");
+        let track2 = Track::stub("BJM-Gs0taqA", "Track 2 (Janiye - uncached)");
+
+        println!("Enqueueing track 1 and track 2...");
+        player
+            .send(PlayerCommand::EnqueueBack(vec![track1, track2]))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let mut current_track: Option<Track> = None;
+        let mut got_track2_playing = false;
+        while start.elapsed().as_secs() < 25 {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), ev_rx.recv()).await {
+                Ok(Some(ev)) => match &ev {
+                    PlayerEvent::TrackChanged(t) => current_track = t.clone(),
+                    PlayerEvent::StateChanged(PlaybackState::Playing) => {
+                        if let Some(t) = &current_track
+                            && t.video_id.as_str() == "BJM-Gs0taqA"
+                        {
+                            got_track2_playing = true;
+                            break;
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+
+        let _ = player.send(PlayerCommand::Shutdown);
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(
+            got_track2_playing,
+            "Expected track 2 (BJM-Gs0taqA) to reach Playing state"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "reproduction test without prefetch"]
+    async fn natural_track_transition_without_prefetch() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-repro-noprefetch-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Create t1.opus (0.2s)
+        let t1_path = cache_dir.join("t1.opus");
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=mono",
+                "-t",
+                "0.2",
+                t1_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024)
+            .with_prefetch_count(0);
+        let cookie_file = std::path::PathBuf::from("/home/pranab/.config/ytm-tui/cookies.txt");
+
+        let (player, mut ev_rx) = spawn_player(100, Some(cookie_file), Some(storage)).unwrap();
+
+        let track1 = Track::stub("t1", "Track 1 (short)");
+        let track2 = Track::stub("BJM-Gs0taqA", "Track 2 (Janiye - uncached)");
+
+        player
+            .send(PlayerCommand::EnqueueBack(vec![track1, track2]))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let mut current_track: Option<Track> = None;
+        let mut got_track2_playing = false;
+        while start.elapsed().as_secs() < 25 {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), ev_rx.recv()).await {
+                Ok(Some(ev)) => match &ev {
+                    PlayerEvent::TrackChanged(t) => current_track = t.clone(),
+                    PlayerEvent::StateChanged(PlaybackState::Playing) => {
+                        if let Some(t) = &current_track
+                            && t.video_id.as_str() == "BJM-Gs0taqA"
+                        {
+                            got_track2_playing = true;
+                            break;
+                        }
+                    }
+
+                    _ => {}
+                },
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+
+        let _ = player.send(PlayerCommand::Shutdown);
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(
+            got_track2_playing,
+            "Expected track 2 (BJM-Gs0taqA) to reach Playing state"
+        );
     }
 }
