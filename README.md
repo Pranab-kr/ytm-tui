@@ -57,6 +57,7 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 3. Extract the archive and place `ytm-tui` in your PATH:
    ```bash
    tar -xzf ytm-tui-*.tar.gz
+   cd ytm-tui-*/
    chmod +x ytm-tui
    mv ytm-tui ~/.local/bin/   # or sudo mv ytm-tui /usr/local/bin/
    ```
