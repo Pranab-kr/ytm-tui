@@ -104,7 +104,7 @@ To access your personal playlists, liked songs, and personalized recommendations
 1. Open a **Private / Incognito** window in your browser (Chrome, Firefox, Brave, Edge, etc.).
 2. Go to [music.youtube.com](https://music.youtube.com) and log in to your Google account.
 3. Press `F12` to open Developer Tools, then click the **Network** tab.
-4. Reload the page (`Ctrl+R` / `Cmd+R`).
+4. **Hold Shift and click the reload button** (or press `Ctrl+Shift+R` / `Cmd+Shift+R`). *Tip:* A normal reload is often served from browser cache and will not show the `cookie:` header; holding Shift forces a clean reload so the full request headers appear.
 5. In the list of requests, click the first request to `music.youtube.com`. Under **Headers** → **Request Headers**, copy the entire value of the `cookie:` header (it starts with something like `VISITOR_INFO1_LIVE=...; SAPISID=...`).
 6. Paste that single line into a text file at:
    - Linux: `~/.config/ytm-cli/cookies.txt`
