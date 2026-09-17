@@ -497,6 +497,12 @@ pub fn targets_for_add(state: &AppState) -> Vec<ytm_core::VideoId> {
 /// Tracks rather than ids because the player queues `Track`s, and re-looking them
 /// up by id would be a second source of truth.
 fn queue_targets(state: &AppState) -> Vec<ytm_core::Track> {
+    if state.pane == Pane::Playlists
+        && state.open_playlist.is_none()
+        && let Some(playlist) = state.playlists.get(state.selected)
+    {
+        return state.tracks_for_playlist(&playlist.id);
+    }
     if !state.marked.is_empty() {
         return state
             .track_rows()
@@ -822,11 +828,28 @@ pub fn dispatch_input(
         // Both honour a marked selection, so `V` over a run then `a` queues the
         // whole range rather than only the row under the cursor.
         A::AddToQueue | A::PlayNext => {
+            let playlist_title = if state.pane == Pane::Playlists && state.open_playlist.is_none() {
+                state.playlists.get(state.selected).map(|p| p.title.clone())
+            } else {
+                None
+            };
             let tracks = queue_targets(state);
             if tracks.is_empty() {
                 return None;
             }
-            let msg = enqueue_message(&tracks, action == A::PlayNext);
+            let where_to = if action == A::PlayNext {
+                "playing next"
+            } else {
+                "added to queue"
+            };
+            let msg = if let Some(title) = playlist_title {
+                match tracks.len() {
+                    1 => format!("{where_to}: {title} (1 track)"),
+                    n => format!("{where_to}: {title} ({n} tracks)"),
+                }
+            } else {
+                enqueue_message(&tracks, action == A::PlayNext)
+            };
             let cmd = if action == A::PlayNext {
                 PlayerCommand::EnqueueNext(tracks)
             } else {
@@ -4020,5 +4043,32 @@ mod tests {
         assert!(t3.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pressing_add_to_queue_on_playlist_row_enqueues_playlist_tracks() {
+        let (_src, player) = deps();
+        let mut state = AppState {
+            pane: Pane::Playlists,
+            open_playlist: None,
+            selected: 0,
+            playlists: vec![ytm_core::Playlist {
+                track_count: Some(2),
+                ..ytm_core::Playlist::stub("p1", "Test Playlist")
+            }],
+            tracks: vec![
+                ytm_core::Track::stub("t1", "Track 1"),
+                ytm_core::Track::stub("t2", "Track 2"),
+            ],
+            ..Default::default()
+        };
+
+        dispatch_input(InputAction::AddToQueue, &mut state, &*player, &beh());
+
+        let cmds = player.commands();
+        assert!(matches!(
+            cmds.as_slice(),
+            [PlayerCommand::EnqueueBack(tracks)] if tracks.len() == 2
+        ));
     }
 }

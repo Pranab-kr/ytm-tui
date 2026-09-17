@@ -1383,6 +1383,16 @@ impl AppState {
         }
     }
 
+    /// Return the tracks for a playlist. If the playlist is currently open, or
+    /// if tracks are loaded in state, returns them; otherwise empty.
+    pub fn tracks_for_playlist(&self, id: &PlaylistId) -> Vec<Track> {
+        if self.open_playlist.as_ref() == Some(id) || self.open_playlist.is_none() {
+            self.tracks.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Toggle an anchored range; closing keeps marks, while Esc restores them.
     pub fn toggle_visual(&mut self) {
         if self.visual_anchor.is_some() {

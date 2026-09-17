@@ -108,9 +108,13 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
             } else {
                 Style::default().fg(t.fg)
             };
-            // Selection is a reversed background, not a '>' marker (spec §6).
-            let style = if is_sel { base.bg(t.bg_sel) } else { base };
-            let dim = if is_sel {
+            // Selection and marked rows receive a reversed background tint (spec §6, FR-FIX2).
+            let style = if is_sel || marked {
+                base.bg(t.bg_sel)
+            } else {
+                base
+            };
+            let dim = if is_sel || marked {
                 style
             } else {
                 Style::default().fg(t.fg_dim)
@@ -119,7 +123,11 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     if marked { "\u{2022} " } else { "  " },
-                    Style::default().fg(t.accent),
+                    if is_sel || marked {
+                        Style::default().fg(t.accent).bg(t.bg_sel)
+                    } else {
+                        Style::default().fg(t.accent)
+                    },
                 ),
                 Span::styled(pad_to_width(&track.title, title_w), style),
                 Span::styled(pad_to_width(&track.artist_display(), artist_w), dim),
@@ -132,7 +140,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
                     dim,
                 ),
             ]))
-            .style(if is_sel {
+            .style(if is_sel || marked {
                 Style::default().bg(t.bg_sel)
             } else {
                 Style::default()
@@ -266,5 +274,33 @@ mod tests {
             buffer_text(&s).contains("No liked songs"),
             "empty states must say something specific to the pane"
         );
+    }
+
+    #[test]
+    fn marked_rows_render_with_highlighted_background() {
+        use crate::app::{AppState, Pane};
+        use crate::theme::Theme;
+        use ytm_core::{Track, VideoId};
+
+        let mut state = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track::stub("t1", "Song 1"), Track::stub("t2", "Song 2")],
+            selected: 1, // cursor on row 1, row 0 is only marked
+            ..Default::default()
+        };
+        state.marked.insert(VideoId::from("t1"));
+        let theme = Theme::preset("tokyonight").unwrap();
+
+        let backend = ratatui::backend::TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &theme))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(rendered.contains('•'));
+        let cell = buffer.cell((0, 0)).unwrap();
+        assert_eq!(cell.bg, theme.bg_sel);
     }
 }
