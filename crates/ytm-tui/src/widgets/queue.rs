@@ -75,8 +75,13 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
             } else {
                 Style::default().fg(t.fg)
             };
-            let style = if is_sel { base.bg(t.bg_sel) } else { base };
-            let dim = if is_sel {
+            // Selection and marked rows receive a reversed background tint (spec §6, FR-FIX2).
+            let style = if is_sel || marked {
+                base.bg(t.bg_sel)
+            } else {
+                base
+            };
+            let dim = if is_sel || marked {
                 style
             } else {
                 Style::default().fg(t.fg_dim)
@@ -93,8 +98,14 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
                 "  "
             };
 
+            let gutter_style = if is_sel || marked {
+                Style::default().fg(t.accent).bg(t.bg_sel)
+            } else {
+                Style::default().fg(t.accent)
+            };
+
             ListItem::new(Line::from(vec![
-                Span::styled(gutter, Style::default().fg(t.accent)),
+                Span::styled(gutter, gutter_style),
                 Span::styled(pad_to_width(&track.title, title_w), style),
                 Span::styled(pad_to_width(&track.artist_display(), artist_w), dim),
                 Span::styled(
@@ -106,7 +117,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
                     dim,
                 ),
             ]))
-            .style(if is_sel {
+            .style(if is_sel || marked {
                 Style::default().bg(t.bg_sel)
             } else {
                 Style::default()
@@ -218,5 +229,29 @@ mod tests {
             ..Default::default()
         };
         assert!(text_of(&s).contains("Queue is empty"));
+    }
+
+    #[test]
+    fn marked_queue_rows_render_with_highlighted_background() {
+        let mut state = AppState {
+            pane: Pane::Queue,
+            queue: vec![Track::stub("v1", "First"), Track::stub("v2", "Second")],
+            selected: 1, // cursor on row 1, row 0 is only marked
+            ..Default::default()
+        };
+        state.marked.insert(ytm_core::VideoId::from("v1"));
+        let theme = Theme::preset("tokyonight").unwrap();
+
+        let backend = ratatui::backend::TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| super::draw(f, f.area(), &state, &theme))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(rendered.contains('•'));
+        let cell = buffer.cell((0, 0)).unwrap();
+        assert_eq!(cell.bg, theme.bg_sel);
     }
 }
