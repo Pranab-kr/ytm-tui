@@ -41,8 +41,8 @@ Runtime requirements (not bundled):
   macOS:   brew install mpv yt-dlp
 
 Install:
-  cp ytm-tui ytm ~/.local/bin/      # or anywhere on your PATH
-  ytm-tui config                    # write and edit config.toml
+  cp ytm-tui ~/.local/bin/          # or anywhere on your PATH
+  ytm-tui config                    # create example config and edit
   ytm-tui playlists                 # check auth without the TUI
   ytm-tui                           # go (or `ytm`)
 

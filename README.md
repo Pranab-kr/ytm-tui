@@ -54,11 +54,11 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 
 1. Go to the [**Releases**](https://github.com/Pranab-kr/ytm-tui/releases) page.
 2. Download the binary matching your operating system and CPU architecture (e.g., `ytm-tui-v0.2.0-x86_64-linux.tar.gz`).
-3. Extract the archive and place `ytm-tui` (and optionally `ytm`) in your PATH:
+3. Extract the archive and place `ytm-tui` in your PATH:
    ```bash
    tar -xzf ytm-tui-*.tar.gz
-   chmod +x ytm-tui ytm
-   mv ytm-tui ytm ~/.local/bin/   # or sudo mv ytm-tui ytm /usr/local/bin/
+   chmod +x ytm-tui
+   mv ytm-tui ~/.local/bin/   # or sudo mv ytm-tui /usr/local/bin/
    ```
 
 #### Option B: Build from Source (via Cargo)
@@ -69,7 +69,7 @@ If you have Rust installed:
 git clone https://github.com/Pranab-kr/ytm-tui.git
 cd ytm-tui
 cargo build --release
-cp target/release/ytm-tui target/release/ytm ~/.local/bin/
+cp target/release/ytm-tui ~/.local/bin/
 ```
 
 ---
@@ -111,10 +111,13 @@ To access your personal playlists, liked songs, and personalized recommendations
    - macOS: `~/Library/Application Support/ytm-tui/cookies.txt`
 7. Close the private browser window without logging out.
 8. Configure `ytm-tui` to use your cookie file:
+   Run the following command. It will automatically generate an example configuration file (with all options and defaults commented out) if one does not exist, and open it in your editor:
    ```bash
    ytm-tui config
    ```
-   Set:
+   *(Tip: If you only want to create the example configuration file without opening an editor, run `ytm-tui config --no-edit`).*
+
+   In the config file, uncomment or set:
    ```toml
    [auth]
    kind = "cookie"
@@ -196,8 +199,17 @@ Press `?` inside the app at any time to see the live keybindings list.
 
 ## Configuration
 
-Run `ytm-tui config` to edit your configuration. The generated file includes all available options with descriptions, commented out with their defaults:
+Run `ytm-tui config` to create or edit your configuration file:
 
+```bash
+ytm-tui config
+```
+
+If a configuration file doesn't exist yet, this command automatically writes an example `config.toml` file populated with every setting and keybinding commented out at its default value, then opens it in your default editor (`$EDITOR`).
+
+> **Tip:** You can run `ytm-tui config --no-edit` to generate the example configuration file without opening an editor.
+
+The generated file includes all available options with descriptions:
 - Change default startup tab (`playlists`, `home`, `songs`, etc.)
 - Adjust volume steps and seek increments
 - Enable or disable mouse support
