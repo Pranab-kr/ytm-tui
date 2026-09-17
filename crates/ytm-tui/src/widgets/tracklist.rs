@@ -24,6 +24,7 @@ pub fn visible_window(selected: usize, offset: usize, height: usize, len: usize)
     if len == 0 || height == 0 {
         return (0, 0);
     }
+    let selected = selected.min(len.saturating_sub(1));
     let mut start = offset.min(len.saturating_sub(1));
     if selected < start {
         start = selected;
@@ -32,7 +33,7 @@ pub fn visible_window(selected: usize, offset: usize, height: usize, len: usize)
         start = selected + 1 - height;
     }
     let end = (start + height).min(len);
-    (start, end)
+    (start.min(end), end)
 }
 
 /// A dim `Title / Artist / Time` header, aligned to the same columns the rows
@@ -66,10 +67,7 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         return;
     }
 
-    // `visible_tracks` is the single source of truth for which rows are on screen:
-    // it picks the right list for the pane and applies the filter. Reading raw
-    // state drew library songs under an open artist and scrolling stopped early.
-    let rows: Vec<&ytm_core::Track> = s.visible_tracks();
+    let rows = s.visible_tracks();
 
     if rows.is_empty() {
         f.render_widget(
@@ -91,7 +89,8 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     let title_w = (text_w * TITLE_SHARE) / 10;
     let artist_w = text_w.saturating_sub(title_w);
 
-    let items: Vec<ListItem> = rows[start..end]
+    let slice = rows.get(start..end).unwrap_or(&rows[..0]);
+    let items: Vec<ListItem> = slice
         .iter()
         .enumerate()
         .map(|(i, track)| {
@@ -209,6 +208,17 @@ mod tests {
     #[test]
     fn window_handles_a_zero_height_viewport() {
         assert_eq!(visible_window(0, 0, 0, 50), (0, 0));
+    }
+
+    #[test]
+    fn window_handles_out_of_bounds_selection() {
+        let (start, end) = visible_window(68, 40, 20, 48);
+        assert!(start <= end, "start {start} must be <= end {end}");
+        assert!(end <= 48, "end {end} must be <= len 48");
+
+        let (start, end) = visible_window(49, 47, 1, 48);
+        assert!(start <= end, "start {start} must be <= end {end}");
+        assert!(end <= 48, "end {end} must be <= len 48");
     }
 
     #[test]

@@ -631,6 +631,9 @@ impl AppState {
             PlayerEvent::QueueChanged { tracks, current } => {
                 self.queue = tracks;
                 self.queue_current = current;
+                if self.pane == Pane::Queue {
+                    self.clamp_selection();
+                }
             }
             PlayerEvent::Error(m) => self.push_toast(ToastKind::Error, &m, self.elapsed_ms),
             PlayerEvent::TrackEnded(_) => {}
@@ -1025,9 +1028,7 @@ impl AppState {
         self.album_tracks.clear();
         self.selected = 0;
         self.scroll_offset = 0;
-        self.marked.clear();
-        self.visual_anchor = None;
-        self.marks_before_visual.clear();
+        self.clear_marks();
         true
     }
 
@@ -1039,9 +1040,7 @@ impl AppState {
         self.artist_tracks.clear();
         self.selected = 0;
         self.scroll_offset = 0;
-        self.marked.clear();
-        self.visual_anchor = None;
-        self.marks_before_visual.clear();
+        self.clear_marks();
         true
     }
 
@@ -1184,10 +1183,31 @@ impl AppState {
         self.tracks.clear();
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_marks();
+        true
+    }
+
+    /// Clear marked tracks and reset visual mode state.
+    pub fn clear_marks(&mut self) {
         self.marked.clear();
         self.visual_anchor = None;
         self.marks_before_visual.clear();
-        true
+    }
+
+    /// Ensure `selected` and `scroll_offset` remain within the bounds of the
+    /// current pane's items.
+    pub fn clamp_selection(&mut self) {
+        let n = self.list_len();
+        if n == 0 {
+            self.selected = 0;
+            self.scroll_offset = 0;
+        } else {
+            if self.selected >= n {
+                self.selected = n - 1;
+            }
+            let max_scroll = n.saturating_sub(1);
+            self.scroll_offset = self.scroll_offset.min(max_scroll);
+        }
     }
 
     /// Say why an account feature is unavailable, naming the exact config key.
@@ -1237,11 +1257,7 @@ impl AppState {
         // rows in the new pane for a reason the user cannot see.
         self.filter.clear();
         self.scroll_offset = 0;
-        self.marked.clear();
-        // The anchor indexes the pane being left. Carrying it over would mark
-        // whichever rows happened to sit at those indices in the new pane.
-        self.visual_anchor = None;
-        self.marks_before_visual.clear();
+        self.clear_marks();
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, text: &str, now_ms: u64) {
@@ -1267,13 +1283,21 @@ impl AppState {
                     p.title = next.clone();
                 }
             }
-            Mutation::DeletePlaylist { id, .. } => self.playlists.retain(|p| &p.id != id),
+            Mutation::DeletePlaylist { id, .. } => {
+                self.playlists.retain(|p| &p.id != id);
+                if self.pane == Pane::Playlists && self.open_playlist.is_none() {
+                    self.clamp_selection();
+                }
+            }
             // Nothing local to show: the tracks were added to a playlist that
             // is not necessarily the one on screen.
             Mutation::AddTracks { .. } => {}
             Mutation::RemoveTracks { removed, .. } => {
                 let drop: Vec<_> = removed.iter().map(|(_, t)| t.video_id.clone()).collect();
                 self.tracks.retain(|t| !drop.contains(&t.video_id));
+                if self.pane == Pane::Playlists && self.open_playlist.is_some() {
+                    self.clamp_selection();
+                }
             }
         }
         self.pending.insert(token, m);
@@ -3482,6 +3506,66 @@ mod tests {
                 .toasts
                 .iter()
                 .any(|t| t.text.contains("Downloaded \"Downloaded Song\""))
+        );
+    }
+
+    #[test]
+    fn queue_changed_clamps_selection_when_in_queue_pane() {
+        let mut state = AppState {
+            pane: Pane::Queue,
+            queue: (0..100)
+                .map(|i| Track::stub(&format!("t{i}"), &format!("Track {i}")))
+                .collect(),
+            selected: 68,
+            scroll_offset: 40,
+            ..Default::default()
+        };
+
+        let new_queue: Vec<Track> = (0..48)
+            .map(|i| Track::stub(&format!("t{i}"), &format!("Track {i}")))
+            .collect();
+        state.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks: new_queue,
+            current: Some(0),
+        }));
+
+        assert_eq!(state.selected, 47, "selection must be clamped to 47");
+        assert!(state.scroll_offset <= 47);
+    }
+
+    #[test]
+    fn clear_marks_resets_marked_and_visual_mode() {
+        let mut state = AppState::default();
+        state.marked.insert(VideoId::from("v1"));
+        state.visual_anchor = Some(3);
+        state.marks_before_visual.insert(VideoId::from("v0"));
+
+        state.clear_marks();
+
+        assert!(state.marked.is_empty());
+        assert_eq!(state.visual_anchor, None);
+        assert!(state.marks_before_visual.is_empty());
+    }
+
+    #[test]
+    fn begin_mutation_clamps_selection_on_deletion() {
+        let mut state = AppState {
+            pane: Pane::Playlists,
+            open_playlist: None,
+            playlists: vec![Playlist::stub("p1", "P1"), Playlist::stub("p2", "P2")],
+            selected: 1,
+            ..Default::default()
+        };
+
+        state.begin_mutation(Mutation::DeletePlaylist {
+            id: PlaylistId::from("p2"),
+            index: 1,
+            snapshot: state.playlists[1].clone(),
+        });
+
+        assert_eq!(
+            state.selected, 0,
+            "selection must be clamped to remaining playlist"
         );
     }
 }

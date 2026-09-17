@@ -792,7 +792,7 @@ pub fn submit_pick(state: &mut AppState) -> Option<(u64, MutationTask)> {
     });
     // The marks were the input to this action; leaving them set would make the
     // next `A` silently repeat it.
-    state.marked.clear();
+    state.clear_marks();
     Some((
         token,
         MutationTask::AddTracks {
@@ -1077,7 +1077,7 @@ pub fn dispatch_input(
             // FR-U3: without this, `a` outside the queue pane gives no sign it
             // worked — the queue is not on screen to show the new row.
             state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
-            state.marked.clear();
+            state.clear_marks();
         }
         // Queue edits are local to this pane; the actor owns queue truth and
         // answers with `QueueChanged`. `x` removes from a playlist elsewhere, and
@@ -1097,14 +1097,19 @@ pub fn dispatch_input(
                     .map(|(i, _)| i)
                     .collect()
             };
+            if !targets.is_empty() {
+                let min_target = *targets.iter().min().unwrap();
+                let remaining_count = state.queue.len().saturating_sub(targets.len());
+                state.selected = min_target.min(remaining_count.saturating_sub(1));
+                state.scroll_offset = state.scroll_offset.min(state.selected);
+            }
             targets.sort_unstable_by(|a, b| b.cmp(a));
             for idx in targets {
                 if idx < state.queue.len() {
                     send(player, PlayerCommand::RemoveFromQueue(idx));
                 }
             }
-            state.marked.clear();
-            state.visual_anchor = None;
+            state.clear_marks();
         }
         A::RemoveFromPlaylist if state.pane == Pane::Downloads => {
             let targets: Vec<ytm_core::Track> = if state.marked.is_empty() {
@@ -1118,21 +1123,31 @@ pub fn dispatch_input(
                     .collect()
             };
             if !targets.is_empty() {
+                let min_target = if state.marked.is_empty() {
+                    state.selected
+                } else {
+                    state
+                        .downloaded_tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| state.marked.contains(&t.video_id))
+                        .map(|(i, _)| i)
+                        .min()
+                        .unwrap_or(0)
+                };
                 let target_ids: std::collections::HashSet<_> =
                     targets.iter().map(|t| t.video_id.clone()).collect();
                 state
                     .downloaded_tracks
                     .retain(|t| !target_ids.contains(&t.video_id));
-                if state.selected >= state.downloaded_tracks.len() {
-                    state.selected = state.downloaded_tracks.len().saturating_sub(1);
-                }
+                state.selected = min_target.min(state.downloaded_tracks.len().saturating_sub(1));
+                state.clamp_selection();
                 let msg = match targets.as_slice() {
                     [one] => format!("Deleted \"{}\" from downloads", one.title),
                     many => format!("Deleted {} tracks from downloads", many.len()),
                 };
                 state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
-                state.marked.clear();
-                state.visual_anchor = None;
+                state.clear_marks();
                 return Some(Task::DeleteDownloads(targets));
             }
         }
@@ -1198,6 +1213,8 @@ pub fn dispatch_input(
         A::ClearQueue if state.pane == Pane::Queue => {
             send(player, PlayerCommand::ClearQueue);
             state.selected = 0;
+            state.scroll_offset = 0;
+            state.clear_marks();
         }
         A::ClearQueue => {}
         A::Download => {
@@ -1215,8 +1232,7 @@ pub fn dispatch_input(
                 many => format!("Downloading {} tracks…", many.len()),
             };
             state.push_toast(ToastKind::Info, &msg, state.elapsed_ms);
-            state.marked.clear();
-            state.visual_anchor = None;
+            state.clear_marks();
             return Some(Task::Download(tracks));
         }
         A::AddToPlaylist => open_add_to_playlist(state),
@@ -2662,6 +2678,34 @@ mod tests {
         let mut s = queue_of_three();
         dispatch_input(InputAction::RemoveFromPlaylist, &mut s, &*player, &beh());
         assert_eq!(s.queue.len(), 3, "the view must wait for QueueChanged");
+    }
+
+    #[test]
+    fn x_on_marked_range_in_queue_adjusts_selection_and_clears_marks() {
+        let (_src, player) = deps();
+        let tracks: Vec<ytm_core::Track> = (0..88)
+            .map(|i| ytm_core::Track::stub(&format!("v{i}"), &format!("Track {i}")))
+            .collect();
+        let mut s = AppState {
+            pane: Pane::Queue,
+            queue: tracks,
+            selected: 79,
+            scroll_offset: 40,
+            ..Default::default()
+        };
+        // Mark rows 40..80 (40 tracks)
+        for i in 40..80 {
+            s.marked.insert(ytm_core::VideoId::from(format!("v{i}")));
+        }
+        s.visual_anchor = Some(40);
+
+        dispatch_input(InputAction::RemoveFromPlaylist, &mut s, &*player, &beh());
+
+        assert_eq!(player.commands().len(), 40);
+        assert!(s.marked.is_empty());
+        assert_eq!(s.visual_anchor, None);
+        assert_eq!(s.selected, 40);
+        assert!(s.scroll_offset <= 40);
     }
 
     #[test]

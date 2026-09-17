@@ -51,7 +51,8 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     let title_w = (text_w * TITLE_SHARE) / 10;
     let artist_w = text_w.saturating_sub(title_w);
 
-    let items: Vec<ListItem> = rows[start..end]
+    let slice = rows.get(start..end).unwrap_or(&rows[..0]);
+    let items: Vec<ListItem> = slice
         .iter()
         .enumerate()
         .map(|(i, track)| {
@@ -253,5 +254,25 @@ mod tests {
         assert!(rendered.contains('•'));
         let cell = buffer.cell((0, 0)).unwrap();
         assert_eq!(cell.bg, theme.bg_sel);
+    }
+
+    #[test]
+    fn queue_render_survives_out_of_bounds_selected() {
+        let state = AppState {
+            pane: Pane::Queue,
+            queue: (0..48)
+                .map(|i| Track::stub(&format!("t{i}"), &format!("Track {i}")))
+                .collect(),
+            selected: 68,
+            scroll_offset: 40,
+            ..Default::default()
+        };
+        let theme = Theme::default();
+
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| super::draw(f, f.area(), &state, &theme))
+            .unwrap();
     }
 }
