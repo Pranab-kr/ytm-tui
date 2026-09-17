@@ -598,7 +598,14 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
     } else {
         cfg.auth.cookie_file.clone()
     };
-    let (player, player_events) = ytm_player::actor::spawn_player(volume, cookie_file)?;
+    let audio_storage = ytm_player::storage::AudioStorageManager::new(
+        cfg.storage.download_dir(),
+        config::paths::cache_dir().join("audio"),
+        cfg.storage.cache_size_mb,
+    )
+    .with_prefetch_count(cfg.storage.prefetch_count);
+    let (player, player_events) =
+        ytm_player::actor::spawn_player(volume, cookie_file, Some(audio_storage))?;
     apply_startup_shuffle(&player, cfg.playback.shuffle);
 
     // A guest cannot enter the account panes, so `ui.start_pane` would strand

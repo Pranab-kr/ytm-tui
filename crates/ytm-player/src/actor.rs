@@ -1,10 +1,13 @@
 //! The player actor: owns the Mpv handle on its own OS thread because
 //! `wait_event` blocks and must never touch the tokio runtime (NFR-2).
 
-use crate::{mpv_backend::MpvHandle, player::*, queue::Queue, resolver::StreamResolver};
+use crate::{
+    mpv_backend::MpvHandle, player::*, queue::Queue, resolver::StreamResolver,
+    storage::AudioStorageManager,
+};
 use std::sync::mpsc as std_mpsc;
 use tokio::sync::mpsc;
-use ytm_core::{Track, TrackDuration};
+use ytm_core::{Track, TrackDuration, VideoId};
 
 /// One retry per track, per FR-P6.
 #[derive(Default)]
@@ -66,6 +69,7 @@ impl Player for MpvPlayer {
 pub fn spawn_player(
     volume: u8,
     cookie_header_file: Option<std::path::PathBuf>,
+    storage: Option<AudioStorageManager>,
 ) -> Result<(MpvPlayer, mpsc::UnboundedReceiver<PlayerEvent>), PlayerError> {
     // Probe before spawning so a missing libmpv is a clean startup error.
     let handle = MpvHandle::new()?;
@@ -76,7 +80,7 @@ pub fn spawn_player(
 
     std::thread::Builder::new()
         .name("ytm-player".into())
-        .spawn(move || run_actor(handle, cmd_rx, ev_tx, volume, cookie_header_file))
+        .spawn(move || run_actor(handle, cmd_rx, ev_tx, volume, cookie_header_file, storage))
         .map_err(|e| PlayerError::MpvUnavailable(e.to_string()))?;
 
     Ok((MpvPlayer { tx: cmd_tx }, ev_rx))
@@ -88,6 +92,8 @@ struct Actor {
     mpv: MpvHandle,
     rt: tokio::runtime::Runtime,
     resolver: StreamResolver,
+    storage: Option<AudioStorageManager>,
+    active_prefetches: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<VideoId>>>,
     queue: Queue,
     retry: RetryState,
     state: PlaybackState,
@@ -123,17 +129,94 @@ impl Actor {
         self.set_state(PlaybackState::Loading);
         self.emit(PlayerEvent::TrackChanged(Some(track.clone())));
 
-        match self.rt.block_on(self.resolver.resolve(&track.video_id)) {
-            Ok(url) => {
-                if let Err(e) = self.mpv.load(&url) {
+        let local_path = self
+            .storage
+            .as_ref()
+            .and_then(|s| s.find_local_audio(&track.video_id));
+
+        if let Some(path) = local_path {
+            if let Err(e) = self.mpv.load(path.to_str().unwrap_or_default()) {
+                self.emit(PlayerEvent::Error(e.to_string()));
+                self.set_state(PlaybackState::Stopped);
+            }
+        } else {
+            match self.rt.block_on(self.resolver.resolve(&track.video_id)) {
+                Ok(url) => {
+                    if let Err(e) = self.mpv.load(&url) {
+                        self.emit(PlayerEvent::Error(e.to_string()));
+                        self.set_state(PlaybackState::Stopped);
+                    }
+                }
+                Err(e) => {
                     self.emit(PlayerEvent::Error(e.to_string()));
                     self.set_state(PlaybackState::Stopped);
                 }
             }
-            Err(e) => {
-                self.emit(PlayerEvent::Error(e.to_string()));
-                self.set_state(PlaybackState::Stopped);
+        }
+
+        self.trigger_lookahead_prefetch();
+    }
+
+    fn trigger_lookahead_prefetch(&mut self) {
+        let Some(storage) = self.storage.as_ref() else {
+            return;
+        };
+        let count = storage.prefetch_count();
+        if count == 0 {
+            return;
+        }
+
+        let Some(current_idx) = self.queue.current_index() else {
+            return;
+        };
+
+        let tracks = self.queue.tracks();
+        let upcoming: Vec<VideoId> = tracks
+            .iter()
+            .skip(current_idx + 1)
+            .take(count)
+            .map(|t| t.video_id.clone())
+            .collect();
+
+        if upcoming.is_empty() {
+            return;
+        }
+
+        let cookie_jar = self.resolver.cookie_jar();
+        for id in upcoming {
+            if storage.find_local_audio(&id).is_some() {
+                continue;
             }
+
+            let mut active = match self.active_prefetches.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if active.contains(&id) {
+                continue;
+            }
+            active.insert(id.clone());
+            drop(active);
+
+            let active_set = std::sync::Arc::clone(&self.active_prefetches);
+            let storage_clone = storage.clone();
+            let target_path = storage.cache_dir().join(format!("{}.opus", id.as_str()));
+            let cookie_jar_clone = cookie_jar.clone();
+
+            std::thread::Builder::new()
+                .name(format!("prefetch-{}", id.as_str()))
+                .spawn(move || {
+                    let _ = storage_clone.download_track_sync(
+                        &id,
+                        &target_path,
+                        cookie_jar_clone.as_deref(),
+                    );
+                    let _ = storage_clone.prune_cache();
+                    if let Ok(mut set) = active_set.lock() {
+                        set.remove(&id);
+                    }
+                })
+                .ok();
         }
     }
 
@@ -298,6 +381,8 @@ impl Actor {
                 // Nothing was playing, so start.
                 if let Some(t) = self.queue.current().cloned().filter(|_| was_empty) {
                     self.play_track(&t);
+                } else {
+                    self.trigger_lookahead_prefetch();
                 }
             }
             PlayerCommand::EnqueueNext(ts) => {
@@ -306,6 +391,8 @@ impl Actor {
                 self.emit_queue();
                 if let Some(t) = self.queue.current().cloned().filter(|_| was_empty) {
                     self.play_track(&t);
+                } else {
+                    self.trigger_lookahead_prefetch();
                 }
             }
             PlayerCommand::RemoveFromQueue(i) => {
@@ -345,6 +432,7 @@ fn run_actor(
     events: mpsc::UnboundedSender<PlayerEvent>,
     volume: u8,
     cookie_header_file: Option<std::path::PathBuf>,
+    storage: Option<AudioStorageManager>,
 ) {
     // The actor thread needs its own small runtime for the async resolver.
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -370,6 +458,10 @@ fn run_actor(
             }
             r
         },
+        storage,
+        active_prefetches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::new(),
+        )),
         queue: Queue::default(),
         retry: RetryState::default(),
         state: PlaybackState::Stopped,
@@ -481,5 +573,53 @@ mod tests {
         // or the queue would advance and silently skip a track.
         assert_eq!(map_end_reason(5), EndReason::Error);
         assert_eq!(map_end_reason(99), EndReason::Error);
+    }
+
+    #[test]
+    fn play_track_loads_local_file_without_network_resolve() {
+        use ytm_core::VideoId;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-test-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+
+        let id = VideoId::from("local_track");
+        let file = dl_dir.join("local_track.opus");
+        std::fs::write(&file, b"test audio").unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, tmp.join("cache"), 1024);
+        assert_eq!(storage.find_local_audio(&id), Some(file));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prefetch_skips_existing_tracks_and_fetches_upcoming() {
+        use ytm_core::VideoId;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-prefetch-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let id1 = VideoId::from("t1");
+        let id2 = VideoId::from("t2");
+        let f1 = dl_dir.join("t1.opus");
+        std::fs::write(&f1, b"opus").unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024);
+        assert!(storage.find_local_audio(&id1).is_some());
+        assert!(storage.find_local_audio(&id2).is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

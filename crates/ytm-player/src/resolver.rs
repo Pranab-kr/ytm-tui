@@ -100,6 +100,10 @@ impl StreamResolver {
         }
     }
 
+    pub fn cookie_jar(&self) -> Option<std::path::PathBuf> {
+        self.cookie_jar.lock().unwrap().clone()
+    }
+
     /// Cached URL if present and still inside the TTL.
     pub fn cached_at(&self, id: &VideoId, now_unix: i64) -> Option<String> {
         let g = self.cache.lock().unwrap();

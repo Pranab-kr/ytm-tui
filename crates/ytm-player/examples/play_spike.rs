@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ids.iter().map(|i| stub(i, i)).collect()
     };
 
-    let (player, mut events) = spawn_player(60, None)?;
+    let (player, mut events) = spawn_player(60, None, None)?;
     println!("actor started; queueing {} tracks", tracks.len());
     player.send(PlayerCommand::EnqueueBack(tracks))?;
 

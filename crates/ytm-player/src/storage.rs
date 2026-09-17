@@ -9,6 +9,7 @@ pub struct AudioStorageManager {
     download_dir: PathBuf,
     cache_dir: PathBuf,
     cache_size_mb: u64,
+    prefetch_count: usize,
 }
 
 impl AudioStorageManager {
@@ -17,7 +18,21 @@ impl AudioStorageManager {
             download_dir,
             cache_dir,
             cache_size_mb,
+            prefetch_count: 2,
         }
+    }
+
+    pub fn with_prefetch_count(mut self, count: usize) -> Self {
+        self.prefetch_count = count;
+        self
+    }
+
+    pub fn prefetch_count(&self) -> usize {
+        self.prefetch_count
+    }
+
+    pub fn set_prefetch_count(&mut self, count: usize) {
+        self.prefetch_count = count;
     }
 
     pub fn download_dir(&self) -> &Path {
