@@ -1658,17 +1658,36 @@ pub async fn run(
 
             // Player actor
             Some(pe) = player_events.recv() => {
-                // Metadata on a track change, status on a state change. Not on
-                // every Progress event: that is 4Hz of D-Bus traffic for a
-                // position the desktop widget interpolates itself.
-                let notify = matches!(
-                    pe,
-                    ytm_player::player::PlayerEvent::TrackChanged(_)
-                        | ytm_player::player::PlayerEvent::StateChanged(_)
-                );
-                state.apply(AppEvent::Player(pe));
-                if notify && let Some(c) = media.as_mut() {
-                    mpris::update(c, &state);
+                match &pe {
+                    ytm_player::player::PlayerEvent::TrackChanged(_) => {
+                        state.apply(AppEvent::Player(pe));
+                        if let Some(c) = media.as_mut() {
+                            mpris::update(c, &state);
+                        }
+                    }
+                    ytm_player::player::PlayerEvent::StateChanged(_) => {
+                        state.apply(AppEvent::Player(pe));
+                        if let Some(c) = media.as_mut() {
+                            mpris::update_playback(c, &state);
+                        }
+                    }
+                    ytm_player::player::PlayerEvent::Progress { position, .. } => {
+                        let pos_changed = state.position != *position;
+                        state.apply(AppEvent::Player(pe));
+                        if pos_changed && let Some(c) = media.as_mut() {
+                            mpris::update_playback(c, &state);
+                        }
+                    }
+                    ytm_player::player::PlayerEvent::VolumeChanged(v) => {
+                        let vol = *v;
+                        state.apply(AppEvent::Player(pe));
+                        if let Some(c) = media.as_mut() {
+                            mpris::update_volume(c, vol);
+                        }
+                    }
+                    _ => {
+                        state.apply(AppEvent::Player(pe));
+                    }
                 }
             }
 

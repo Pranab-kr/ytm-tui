@@ -126,8 +126,8 @@ impl Actor {
     /// Resolve and load a track. Blocking `block_on` is correct here — this is
     /// the actor's own thread, not the runtime (NFR-2).
     fn play_track(&mut self, track: &Track) {
-        self.set_state(PlaybackState::Loading);
         self.emit(PlayerEvent::TrackChanged(Some(track.clone())));
+        self.set_state(PlaybackState::Loading);
 
         let mut local_path = self
             .storage

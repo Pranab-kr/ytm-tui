@@ -17,9 +17,19 @@ pub fn to_command(ev: MediaControlEvent) -> Option<PlayerCommand> {
         MediaControlEvent::SetVolume(v) => {
             PlayerCommand::SetVolume((v.clamp(0.0, 1.0) * 100.0).round() as u8)
         }
-        // Everything else (Seek, SeekBy, SetPosition, OpenUri, Raise, Quit) is
-        // deliberately unmapped: guessing at a mapping is worse than ignoring
-        // the key, because the user cannot tell a wrong action from a bug.
+        MediaControlEvent::SetPosition(souvlaki::MediaPosition(d)) => {
+            PlayerCommand::SeekAbsolute(d.as_secs())
+        }
+        MediaControlEvent::SeekBy(souvlaki::SeekDirection::Forward, d) => {
+            PlayerCommand::SeekRelative((d.as_secs_f64().round() as i64).max(1))
+        }
+        MediaControlEvent::SeekBy(souvlaki::SeekDirection::Backward, d) => {
+            PlayerCommand::SeekRelative(-((d.as_secs_f64().round() as i64).max(1)))
+        }
+        MediaControlEvent::Seek(souvlaki::SeekDirection::Forward) => PlayerCommand::SeekRelative(5),
+        MediaControlEvent::Seek(souvlaki::SeekDirection::Backward) => {
+            PlayerCommand::SeekRelative(-5)
+        }
         _ => return None,
     })
 }
@@ -65,16 +75,17 @@ pub fn playback_of(s: &ytm_tui::app::AppState) -> MediaPlayback {
     match s.playback {
         P::Playing => MediaPlayback::Playing { progress },
         P::Paused => MediaPlayback::Paused { progress },
-        // Loading is "about to play" to the user, and MPRIS has no third
-        // state; reporting Stopped would make a desktop widget flicker.
-        P::Loading => MediaPlayback::Playing { progress },
+        // Loading is resolving the URL/buffering; report Paused at 0 so desktop widgets
+        // keep metadata visible without advancing their seekbar ahead of real audio.
+        P::Loading => MediaPlayback::Paused {
+            progress: Some(souvlaki::MediaPosition(std::time::Duration::ZERO)),
+        },
         P::Stopped => MediaPlayback::Stopped,
     }
 }
 
-/// Push the current track to the OS. Errors are logged, never surfaced: a dead
-/// bus must not interrupt playback (FR-U6 is additive).
-pub fn update(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
+/// Push only the current track metadata to the OS.
+pub fn update_metadata(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
     let m = metadata_of(s);
     if let Err(e) = controls.set_metadata(MediaMetadata {
         title: m.title.as_deref(),
@@ -85,9 +96,26 @@ pub fn update(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
     }) {
         tracing::debug!(error = ?e, "could not set MPRIS metadata");
     }
+}
+
+/// Push only the current playback status/position to the OS.
+pub fn update_playback(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
     if let Err(e) = controls.set_playback(playback_of(s)) {
         tracing::debug!(error = ?e, "could not set MPRIS playback status");
     }
+}
+
+/// Push volume change to the OS.
+pub fn update_volume(controls: &mut MediaControls, volume: u8) {
+    if let Err(e) = controls.set_volume(volume as f64 / 100.0) {
+        tracing::debug!(error = ?e, "could not set MPRIS volume");
+    }
+}
+
+/// Push the current track and playback status to the OS.
+pub fn update(controls: &mut MediaControls, s: &ytm_tui::app::AppState) {
+    update_metadata(controls, s);
+    update_playback(controls, s);
 }
 
 /// Returns `None` when the platform has no media-control bus — not an error. The
@@ -146,6 +174,33 @@ mod tests {
     }
 
     #[test]
+    fn seeking_and_position_events_map_to_player_commands() {
+        use souvlaki::{MediaControlEvent as E, MediaPosition, SeekDirection};
+        use std::time::Duration;
+
+        assert!(matches!(
+            to_command(E::SetPosition(MediaPosition(Duration::from_secs(42)))),
+            Some(PlayerCommand::SeekAbsolute(42))
+        ));
+        assert!(matches!(
+            to_command(E::SeekBy(SeekDirection::Forward, Duration::from_secs(10))),
+            Some(PlayerCommand::SeekRelative(10))
+        ));
+        assert!(matches!(
+            to_command(E::SeekBy(SeekDirection::Backward, Duration::from_secs(10))),
+            Some(PlayerCommand::SeekRelative(-10))
+        ));
+        assert!(matches!(
+            to_command(E::Seek(SeekDirection::Forward)),
+            Some(PlayerCommand::SeekRelative(5))
+        ));
+        assert!(matches!(
+            to_command(E::Seek(SeekDirection::Backward)),
+            Some(PlayerCommand::SeekRelative(-5))
+        ));
+    }
+
+    #[test]
     fn metadata_is_empty_when_nothing_is_playing() {
         let s = ytm_tui::app::AppState::default();
         let m = metadata_of(&s);
@@ -183,10 +238,10 @@ mod tests {
             playback_of(&at(P::Stopped)),
             MediaPlayback::Stopped
         ));
-        // Loading is "about to play"; Stopped here makes desktop widgets flicker.
+        // Loading is resolving URL/buffering; report Paused so widgets keep metadata without drifting.
         assert!(matches!(
             playback_of(&at(P::Loading)),
-            MediaPlayback::Playing { .. }
+            MediaPlayback::Paused { .. }
         ));
     }
 

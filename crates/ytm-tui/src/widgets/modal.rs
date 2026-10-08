@@ -26,45 +26,120 @@ const HEIGHT_PCT: u16 = 20;
 
 pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     let Some(modal) = &s.modal else { return };
-    let (title, body, footer) = match modal {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    if matches!(modal, Modal::Help | Modal::Login { .. }) {
+        return;
+    }
+
+    let (width_pct, height_pct) = match modal {
+        Modal::PickPlaylist { .. } => (60, 50),
+        _ => (WIDTH_PCT, HEIGHT_PCT),
+    };
+
+    let rect = centered_rect(width_pct, height_pct, area);
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+
+    let (title, lines) = match modal {
         Modal::Confirm { text, .. } => {
-            (" Confirm ", text.clone(), "[y] yes   [n] no   [esc] cancel")
+            let inner_w = rect.width.saturating_sub(2) as usize;
+            let inner_h = rect.height.saturating_sub(2) as usize;
+            let mut lines = Vec::new();
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(text, inner_w),
+                Style::default().fg(t.fg_bright),
+            )));
+            while lines.len() + 1 < inner_h {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                truncate_to_width("[y] yes   [n] no   [esc] cancel", inner_w),
+                Style::default().fg(t.fg_dim),
+            )));
+            (" Confirm ".to_string(), lines)
         }
-        Modal::Prompt { title, value, .. } => (
-            " Edit ",
-            // The cursor is part of the value line: an empty prompt otherwise
-            // renders as blank space and reads as a dead box.
-            format!("{title}\n{value}{CURSOR}"),
-            "[enter] save   [esc] cancel",
-        ),
+        Modal::Prompt { title, value, .. } => {
+            let inner_w = rect.width.saturating_sub(2) as usize;
+            let inner_h = rect.height.saturating_sub(2) as usize;
+            let mut lines = Vec::new();
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(title, inner_w),
+                Style::default().fg(t.fg_bright),
+            )));
+            let val_with_cursor = format!("{value}{CURSOR}");
+            lines.push(Line::from(Span::styled(
+                tail_to_width(&val_with_cursor, inner_w),
+                Style::default().fg(t.fg),
+            )));
+            while lines.len() + 1 < inner_h {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                truncate_to_width("[enter] save   [esc] cancel", inner_w),
+                Style::default().fg(t.fg_dim),
+            )));
+            (" Edit ".to_string(), lines)
+        }
         Modal::PickPlaylist {
             targets,
             choices,
             selected,
         } => {
-            // Rows are built here rather than by a list widget: the picker is a
-            // handful of names, and reusing the playlist list would drag its
-            // track counts and read-only markers in with it.
-            let mut body = format!("Add {} track(s) to which playlist?", targets.len());
-            for (i, (_, title)) in choices.iter().enumerate() {
-                let marker = if i == *selected { "> " } else { "  " };
-                body.push('\n');
-                body.push_str(marker);
-                body.push_str(title);
+            let inner_w = rect.width.saturating_sub(2) as usize;
+            let inner_h = rect.height.saturating_sub(2) as usize;
+            let selected_idx = (*selected).min(choices.len().saturating_sub(1));
+            let title = if choices.len() > 1 {
+                format!(" Add to playlist ({}/{}) ", selected_idx + 1, choices.len())
+            } else {
+                " Add to playlist ".to_string()
+            };
+
+            let mut lines = Vec::new();
+            let header = format!("Add {} track(s) to which playlist?", targets.len());
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(&header, inner_w),
+                Style::default().fg(t.fg_bright),
+            )));
+
+            let available_rows = inner_h.saturating_sub(2);
+            let start = if choices.len() <= available_rows || selected_idx < available_rows {
+                0
+            } else {
+                (selected_idx + 1 - available_rows)
+                    .min(choices.len().saturating_sub(available_rows))
+            };
+            let end = (start + available_rows).min(choices.len());
+
+            for (idx, (_, ptitle)) in choices.iter().enumerate().take(end).skip(start) {
+                let is_sel = idx == selected_idx;
+                let marker = if is_sel { "> " } else { "  " };
+                let text = tail_to_width(&format!("{marker}{ptitle}"), inner_w);
+                let style = if is_sel {
+                    Style::default()
+                        .fg(t.fg_bright)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg)
+                };
+                lines.push(Line::from(Span::styled(text, style)));
             }
-            (" Add to playlist ", body, "[enter] add   [esc] cancel")
+
+            while lines.len() + 1 < inner_h {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                truncate_to_width("[enter] add   [esc] cancel", inner_w),
+                Style::default().fg(t.fg_dim),
+            )));
+
+            (title, lines)
         }
-        // Help draws itself; Login belongs to the auth pane.
         Modal::Help | Modal::Login { .. } => return,
     };
-
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let rect = centered_rect(WIDTH_PCT, HEIGHT_PCT, area);
-    if rect.width == 0 || rect.height == 0 {
-        return;
-    }
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -77,38 +152,11 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         .border_style(Style::default().fg(t.fg_dim));
     let inner = block.inner(rect);
 
-    // Clear first, or the list underneath shows through the box.
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-
-    let w = inner.width as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, part) in body.split('\n').enumerate() {
-        // The value line keeps its *end*: truncating the front would hide the
-        // characters the user just typed.
-        let text = if i == 0 {
-            truncate_to_width(part, w)
-        } else {
-            tail_to_width(part, w)
-        };
-        let style = if i == 0 {
-            Style::default().fg(t.fg_bright)
-        } else {
-            Style::default().fg(t.fg)
-        };
-        lines.push(Line::from(Span::styled(text, style)));
-    }
-    // Footer sits on the last row, so the box reads top-down.
-    while lines.len() + 1 < inner.height as usize {
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from(Span::styled(
-        truncate_to_width(footer, w),
-        Style::default().fg(t.fg_dim),
-    )));
 
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -317,5 +365,34 @@ mod tests {
         let text = text_of(&s);
         assert!(text.contains("Roygbiv"));
         assert!(!text.contains("[esc]"));
+    }
+
+    fn picking_playlist(selected: usize) -> AppState {
+        let choices = (0..15)
+            .map(|i| (PlaylistId::from(format!("p{i}")), format!("Playlist {i}")))
+            .collect();
+        AppState {
+            modal: Some(Modal::PickPlaylist {
+                targets: vec![ytm_core::VideoId::from("v1")],
+                choices,
+                selected,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pick_playlist_renders_selected_item_at_start_and_end() {
+        let text_start = text_of(&picking_playlist(0));
+        assert!(
+            text_start.contains("> Playlist 0"),
+            "first item selected must be visible"
+        );
+
+        let text_end = text_of(&picking_playlist(14));
+        assert!(
+            text_end.contains("> Playlist 14"),
+            "last item selected must be visible when scrolled"
+        );
     }
 }

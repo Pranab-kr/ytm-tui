@@ -348,6 +348,26 @@ impl AppState {
                 (Modal::PickPlaylist { selected, .. }, InputAction::Up) => {
                     *selected = selected.saturating_sub(1)
                 }
+                (Modal::PickPlaylist { selected, .. }, InputAction::Home) => {
+                    *selected = 0;
+                }
+                (
+                    Modal::PickPlaylist {
+                        selected, choices, ..
+                    },
+                    InputAction::End,
+                ) => *selected = choices.len().saturating_sub(1),
+                (
+                    Modal::PickPlaylist {
+                        selected, choices, ..
+                    },
+                    InputAction::PageDown,
+                ) => {
+                    *selected = (*selected + 5).min(choices.len().saturating_sub(1));
+                }
+                (Modal::PickPlaylist { selected, .. }, InputAction::PageUp) => {
+                    *selected = selected.saturating_sub(5);
+                }
                 // pop() removes a whole char — byte slicing would panic on
                 // multibyte input.
                 (Modal::Prompt { value, .. }, InputAction::Backspace) => {
@@ -584,6 +604,8 @@ impl AppState {
             // Guarded so it only claims the key during visual mode; outside it,
             // Esc keeps whatever meaning it had.
             InputAction::Cancel if self.visual_anchor.is_some() => self.cancel_visual(),
+            // Esc deselects marked tracks outside visual mode (e.g. tracks selected with 'v').
+            InputAction::Cancel if !self.marked.is_empty() => self.clear_marks(),
             // `h` leaves a nested list before moving focus to the sidebar.
             InputAction::Left => {
                 // An open playlist or an open artist is a level to leave. Without
@@ -645,6 +667,7 @@ impl AppState {
     pub fn input_focus(&self) -> Focus {
         match self.modal {
             Some(Modal::Prompt { .. }) | Some(Modal::Confirm { .. }) => Focus::SearchInput,
+            Some(Modal::PickPlaylist { .. }) => Focus::Main,
             _ => self.focus,
         }
     }
@@ -2394,6 +2417,39 @@ mod tests {
         s.apply(AppEvent::Input(InputAction::Cancel));
         assert_eq!(s.visual_anchor, None);
         assert_eq!(marked_ids(&s), vec!["v5"], "only the old mark remains");
+    }
+
+    #[test]
+    fn escape_clears_hand_marked_tracks_outside_visual_mode() {
+        let mut s = songs(6);
+        s.selected = 1;
+        s.toggle_mark();
+        s.selected = 3;
+        s.toggle_mark();
+        assert_eq!(marked_ids(&s), vec!["v1", "v3"]);
+        s.apply(AppEvent::Input(InputAction::Cancel));
+        assert!(s.marked.is_empty(), "escape must deselect marked songs");
+    }
+
+    #[test]
+    fn escape_clears_marked_tracks_in_queue_pane() {
+        let mut s = AppState {
+            pane: Pane::Queue,
+            queue: (0..5)
+                .map(|i| ytm_core::Track::stub(&format!("q{i}"), "Q"))
+                .collect(),
+            ..Default::default()
+        };
+        s.selected = 0;
+        s.toggle_mark();
+        s.selected = 2;
+        s.toggle_mark();
+        assert_eq!(s.marked.len(), 2);
+        s.apply(AppEvent::Input(InputAction::Cancel));
+        assert!(
+            s.marked.is_empty(),
+            "escape in queue deselects marked songs"
+        );
     }
 
     #[test]
