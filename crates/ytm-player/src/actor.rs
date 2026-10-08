@@ -74,11 +74,6 @@ pub fn spawn_player(
     // Probe before spawning so a missing libmpv is a clean startup error.
     let handle = MpvHandle::new()?;
     handle.set_volume(volume)?;
-    if let Some(cookie_path) = cookie_header_file.as_deref()
-        && let Some(jar) = crate::resolver::ensure_netscape_cookie_jar(cookie_path)
-    {
-        let _ = handle.set_cookies_file(&jar);
-    }
 
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<PlayerCommand>();
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<PlayerEvent>();
@@ -131,6 +126,10 @@ impl Actor {
     /// Resolve and load a track. Blocking `block_on` is correct here — this is
     /// the actor's own thread, not the runtime (NFR-2).
     fn play_track(&mut self, track: &Track) {
+        self.play_track_with_pref(track, None);
+    }
+
+    fn play_track_with_pref(&mut self, track: &Track, pref: Option<bool>) {
         self.emit(PlayerEvent::TrackChanged(Some(track.clone())));
         self.set_state(PlaybackState::Loading);
 
@@ -171,7 +170,10 @@ impl Actor {
                 self.set_state(PlaybackState::Stopped);
             }
         } else {
-            match self.rt.block_on(self.resolver.resolve(&track.video_id)) {
+            match self.rt.block_on(
+                self.resolver
+                    .resolve_with_auth_preference(&track.video_id, pref),
+            ) {
                 Ok(url) => {
                     if let Err(e) = self.mpv.load(&url) {
                         self.emit(PlayerEvent::Error(e.to_string()));
@@ -257,8 +259,9 @@ impl Actor {
             return;
         };
         if self.retry.should_retry() {
-            self.resolver.invalidate(&track.video_id);
-            self.play_track(&track);
+            let was_with_cookies = self.resolver.invalidate(&track.video_id);
+            let alt_pref = was_with_cookies.map(|c| !c);
+            self.play_track_with_pref(&track, alt_pref);
         } else {
             self.emit(PlayerEvent::Error(
                 "this track's stream expired and could not be renewed".into(),
@@ -850,5 +853,58 @@ mod tests {
             got_track2_playing,
             "Expected track 2 (BJM-Gs0taqA) to reach Playing state"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "tests playback of online track with user cookie configuration"]
+    async fn plays_online_track_with_cookie_auth_configured() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!("ytm-actor-cookie-test-{}", nanos));
+        let dl_dir = tmp.join("dl");
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&dl_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024)
+            .with_prefetch_count(0);
+        let cookie_file = std::path::PathBuf::from("/home/pranab/.config/ytm-tui/cookies.txt");
+        let cookie_opt = if cookie_file.exists() {
+            Some(cookie_file)
+        } else {
+            None
+        };
+        let (player, mut ev_rx) = spawn_player(100, cookie_opt, Some(storage)).unwrap();
+
+        let track = Track::stub("0CN73wWv3Sc", "Love Me (ORIGINAL)");
+        player.send(PlayerCommand::PlayNow(track)).unwrap();
+
+        let start = std::time::Instant::now();
+        let mut got_playing = false;
+        let mut got_error = None;
+        while start.elapsed().as_secs() < 12 {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), ev_rx.recv()).await {
+                Ok(Some(ev)) => match &ev {
+                    PlayerEvent::StateChanged(PlaybackState::Playing) => {
+                        got_playing = true;
+                        break;
+                    }
+                    PlayerEvent::Error(err) => {
+                        got_error = Some(err.clone());
+                        break;
+                    }
+                    _ => {}
+                },
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+
+        let _ = player.send(PlayerCommand::Shutdown);
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(got_error.is_none(), "Got error: {:?}", got_error);
+        assert!(got_playing, "Expected track to reach Playing state");
     }
 }

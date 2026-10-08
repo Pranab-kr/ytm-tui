@@ -19,6 +19,7 @@ impl MpvHandle {
             init.set_property("osc", false)?;
             init.set_property("input-default-bindings", false)?;
             init.set_property("terminal", false)?;
+            init.set_property("ytdl", false)?;
             init.set_property("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")?;
             // Bigger cache: streaming URLs stutter on the default.
             init.set_property("cache", "yes")?;
@@ -37,16 +38,6 @@ impl MpvHandle {
             .map_err(|e| PlayerError::MpvUnavailable(e.to_string()))?;
         let _ = self.set_pause(false);
         Ok(())
-    }
-
-    pub fn set_cookies_file(&self, path: &std::path::Path) -> Result<(), PlayerError> {
-        let p = path.to_str().unwrap_or_default();
-        self.mpv
-            .set_property("cookies", true)
-            .map_err(|e| PlayerError::MpvUnavailable(e.to_string()))?;
-        self.mpv
-            .set_property("cookies-file", p)
-            .map_err(|e| PlayerError::MpvUnavailable(e.to_string()))
     }
 
     pub fn set_pause(&self, paused: bool) -> Result<(), PlayerError> {

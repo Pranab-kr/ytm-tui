@@ -24,6 +24,7 @@ pub enum ResolveError {
 struct Entry {
     url: String,
     fetched_at: i64,
+    used_cookies: bool,
 }
 
 pub struct StreamResolver {
@@ -141,8 +142,12 @@ impl StreamResolver {
         (now_unix - e.fetched_at < TTL_SECS).then(|| e.url.clone())
     }
 
-    pub fn invalidate(&self, id: &VideoId) {
-        self.cache.lock().unwrap().remove(id);
+    pub fn invalidate(&self, id: &VideoId) -> Option<bool> {
+        self.cache
+            .lock()
+            .unwrap()
+            .remove(id)
+            .map(|e| e.used_cookies)
     }
 
     #[doc(hidden)]
@@ -152,23 +157,66 @@ impl StreamResolver {
             Entry {
                 url: url.to_owned(),
                 fetched_at: at,
+                used_cookies: false,
             },
         );
     }
 
     /// Resolve, using the cache when warm.
+    /// Prefers unauthenticated resolution first (via `visionos` client in yt-dlp)
+    /// which is faster, avoids GVS PO Token web client errors (HTTP 403), and
+    /// provides direct streaming URLs. If unauthenticated resolution fails (e.g.
+    /// bot-check challenge, age-restricted track, private track) and cookies are
+    /// configured, falls back to cookie-authenticated resolution.
     pub async fn resolve(&self, id: &VideoId) -> Result<String, ResolveError> {
+        self.resolve_with_auth_preference(id, None).await
+    }
+
+    pub async fn resolve_with_auth_preference(
+        &self,
+        id: &VideoId,
+        prefer_cookies: Option<bool>,
+    ) -> Result<String, ResolveError> {
         let now = now_unix();
         if let Some(u) = self.cached_at(id, now) {
             return Ok(u);
         }
         let jar = self.cookie_jar.lock().unwrap().clone();
-        let url = Self::run_yt_dlp(id, jar.as_deref()).await?;
+
+        let (url, used_cookies) = match prefer_cookies {
+            Some(true) => {
+                if let Some(ref j) = jar {
+                    match Self::run_yt_dlp(id, Some(j)).await {
+                        Ok(u) => (u, true),
+                        Err(_) => (Self::run_yt_dlp(id, None).await?, false),
+                    }
+                } else {
+                    (Self::run_yt_dlp(id, None).await?, false)
+                }
+            }
+            Some(false) => match Self::run_yt_dlp(id, None).await {
+                Ok(u) => (u, false),
+                Err(_) if jar.is_some() => (Self::run_yt_dlp(id, jar.as_deref()).await?, true),
+                Err(e) => return Err(e),
+            },
+            None => match Self::run_yt_dlp(id, None).await {
+                Ok(u) => (u, false),
+                Err(e) => {
+                    if let Some(ref j) = jar {
+                        (Self::run_yt_dlp(id, Some(j)).await?, true)
+                    } else {
+                        return Err(e);
+                    }
+                }
+            },
+        };
+
         self.cache.lock().unwrap().insert(
             id.clone(),
             Entry {
                 url: url.clone(),
                 fetched_at: now,
+                used_cookies,
             },
         );
         Ok(url)
@@ -261,8 +309,10 @@ mod tests {
         // FR-P6: a stale URL must be evicted before the retry.
         let r = StreamResolver::new();
         r.insert_for_test(&VideoId::from("v1"), "https://example.com/a", 1_000);
-        r.invalidate(&VideoId::from("v1"));
+        let was_cookies = r.invalidate(&VideoId::from("v1"));
+        assert_eq!(was_cookies, Some(false));
         assert!(r.cached_at(&VideoId::from("v1"), 1_001).is_none());
+        assert_eq!(r.invalidate(&VideoId::from("v1")), None);
     }
 
     #[test]
