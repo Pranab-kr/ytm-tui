@@ -74,6 +74,11 @@ pub fn spawn_player(
     // Probe before spawning so a missing libmpv is a clean startup error.
     let handle = MpvHandle::new()?;
     handle.set_volume(volume)?;
+    if let Some(cookie_path) = cookie_header_file.as_deref()
+        && let Some(jar) = crate::resolver::ensure_netscape_cookie_jar(cookie_path)
+    {
+        let _ = handle.set_cookies_file(&jar);
+    }
 
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<PlayerCommand>();
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<PlayerEvent>();
@@ -143,8 +148,8 @@ impl Actor {
 
             if is_prefetching {
                 let start_wait = std::time::Instant::now();
-                while start_wait.elapsed().as_secs() < 15 {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                while start_wait.elapsed().as_millis() < 250 {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
                     let still_active = match self.active_prefetches.lock() {
                         Ok(g) => g.contains(&track.video_id),
                         Err(p) => p.into_inner().contains(&track.video_id),
@@ -157,23 +162,6 @@ impl Actor {
                     .storage
                     .as_ref()
                     .and_then(|s| s.find_local_audio(&track.video_id));
-            }
-        }
-
-        // If still not in local storage and storage is enabled, download it directly.
-        if local_path.is_none()
-            && let Some(storage) = self.storage.as_ref()
-        {
-            let target_path = storage
-                .cache_dir()
-                .join(format!("{}.opus", track.video_id.as_str()));
-            let cookie_jar = self.resolver.cookie_jar();
-            if storage
-                .download_track_sync(&track.video_id, &target_path, cookie_jar.as_deref())
-                .is_ok()
-            {
-                let _ = storage.prune_cache();
-                local_path = Some(target_path);
             }
         }
 
@@ -556,6 +544,7 @@ fn run_actor(
         }
 
         if loaded {
+            let _ = actor.mpv.set_pause(false);
             actor.set_state(PlaybackState::Playing);
         }
         if let Some(reason) = ended {
@@ -754,14 +743,11 @@ mod tests {
             .unwrap();
 
         let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024);
-        let cookie_file = std::path::PathBuf::from("/home/pranab/.config/ytm-tui/cookies.txt");
-
-        let (player, mut ev_rx) = spawn_player(100, Some(cookie_file), Some(storage)).unwrap();
+        let (player, mut ev_rx) = spawn_player(100, None, Some(storage)).unwrap();
 
         let track1 = Track::stub("t1", "Track 1 (short)");
         let track2 = Track::stub("BJM-Gs0taqA", "Track 2 (Janiye - uncached)");
 
-        println!("Enqueueing track 1 and track 2...");
         player
             .send(PlayerCommand::EnqueueBack(vec![track1, track2]))
             .unwrap();
@@ -827,9 +813,7 @@ mod tests {
 
         let storage = crate::storage::AudioStorageManager::new(dl_dir, cache_dir, 1024)
             .with_prefetch_count(0);
-        let cookie_file = std::path::PathBuf::from("/home/pranab/.config/ytm-tui/cookies.txt");
-
-        let (player, mut ev_rx) = spawn_player(100, Some(cookie_file), Some(storage)).unwrap();
+        let (player, mut ev_rx) = spawn_player(100, None, Some(storage)).unwrap();
 
         let track1 = Track::stub("t1", "Track 1 (short)");
         let track2 = Track::stub("BJM-Gs0taqA", "Track 2 (Janiye - uncached)");
@@ -853,7 +837,6 @@ mod tests {
                             break;
                         }
                     }
-
                     _ => {}
                 },
                 Ok(None) => break,
