@@ -34,12 +34,21 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         return;
     }
 
-    let (width_pct, height_pct) = match modal {
-        Modal::PickPlaylist { .. } => (60, 50),
-        _ => (WIDTH_PCT, HEIGHT_PCT),
+    let rect = match modal {
+        Modal::PickPlaylist { choices, .. } => {
+            // Keep PickPlaylist compact on wide/large displays:
+            // - width capped at 54 columns (comfortable for playlist names without sprawling across screen)
+            // - height adapts to choices count (between 8 and 15 rows) so there are no empty blank rows
+            let w = (area.width * 45 / 100).clamp(42, 54).min(area.width);
+            let content_rows = (choices.len() as u16 + 4).clamp(8, 15);
+            let h = content_rows.min(area.height);
+            let x = area.x + area.width.saturating_sub(w) / 2;
+            let y = area.y + area.height.saturating_sub(h) / 2;
+            Rect::new(x, y, w, h)
+        }
+        _ => centered_rect(WIDTH_PCT, HEIGHT_PCT, area),
     };
 
-    let rect = centered_rect(width_pct, height_pct, area);
     if rect.width == 0 || rect.height == 0 {
         return;
     }
@@ -393,6 +402,35 @@ mod tests {
         assert!(
             text_end.contains("> Playlist 14"),
             "last item selected must be visible when scrolled"
+        );
+    }
+
+    #[test]
+    fn pick_playlist_modal_is_compact_on_wide_screens() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut t = Terminal::new(TestBackend::new(200, 50)).unwrap();
+        let theme = Theme::default();
+        let s = picking_playlist(0);
+        t.draw(|f| {
+            crate::render::render(
+                f,
+                &s,
+                &theme,
+                &KeyMap::default(),
+                &mut crate::widgets::art::ArtCache::disabled(),
+            )
+        })
+        .unwrap();
+
+        let buf = t.backend().buffer().clone();
+        // Modal is centered and at most 54 columns wide.
+        // On a 200 column screen, modal x range is ~73..127.
+        // Columns 0..70 should be outside the modal (not contain modal box characters)
+        let left_cell = &buf[(20, 25)];
+        assert_ne!(
+            left_cell.symbol(),
+            "│",
+            "modal should not extend to column 20 on wide screens"
         );
     }
 }
