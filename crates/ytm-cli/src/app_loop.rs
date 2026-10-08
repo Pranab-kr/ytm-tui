@@ -1671,11 +1671,17 @@ pub async fn run(
                             mpris::update_playback(c, &state);
                         }
                     }
-                    ytm_player::player::PlayerEvent::Progress { position, .. } => {
+                    ytm_player::player::PlayerEvent::Progress { position, duration } => {
                         let pos_changed = state.position != *position;
+                        let dur_changed = state.duration != *duration;
                         state.apply(AppEvent::Player(pe));
-                        if pos_changed && let Some(c) = media.as_mut() {
-                            mpris::update_playback(c, &state);
+                        if let Some(c) = media.as_mut() {
+                            if dur_changed {
+                                mpris::update_metadata(c, &state);
+                            }
+                            if pos_changed {
+                                mpris::update_playback(c, &state);
+                            }
                         }
                     }
                     ytm_player::player::PlayerEvent::VolumeChanged(v) => {

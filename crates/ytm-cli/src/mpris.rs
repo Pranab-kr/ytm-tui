@@ -54,13 +54,24 @@ pub fn metadata_of(s: &ytm_tui::app::AppState) -> OwnedMetadata {
             cover_url: None,
             duration: None,
         },
-        Some(t) => OwnedMetadata {
-            title: Some(t.title.clone()),
-            artist: Some(t.artist_display()),
-            album: t.album.clone(),
-            cover_url: t.thumbnail_url.clone(),
-            duration: Some(std::time::Duration::from_secs(s.duration.as_secs())),
-        },
+        Some(t) => {
+            let dur = if s.duration.as_secs() > 0 {
+                s.duration
+            } else {
+                t.duration
+            };
+            OwnedMetadata {
+                title: Some(t.title.clone()),
+                artist: Some(t.artist_display()),
+                album: t.album.clone(),
+                cover_url: t.thumbnail_url.clone(),
+                duration: if dur.as_secs() > 0 {
+                    Some(std::time::Duration::from_secs(dur.as_secs()))
+                } else {
+                    None
+                },
+            }
+        }
     }
 }
 
@@ -217,6 +228,19 @@ mod tests {
         let m = metadata_of(&s);
         assert_eq!(m.title.as_deref(), Some("Roygbiv"));
         assert_eq!(m.duration.map(|d| d.as_secs()), Some(149));
+    }
+
+    #[test]
+    fn metadata_falls_back_to_track_duration_if_appstate_duration_is_zero() {
+        let mut track = ytm_core::Track::stub("v1", "Roygbiv");
+        track.duration = ytm_core::TrackDuration::from_secs(173);
+        let s = ytm_tui::app::AppState {
+            now_playing: Some(track),
+            duration: ytm_core::TrackDuration::from_secs(0),
+            ..Default::default()
+        };
+        let m = metadata_of(&s);
+        assert_eq!(m.duration.map(|d| d.as_secs()), Some(173));
     }
 
     #[test]

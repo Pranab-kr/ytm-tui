@@ -640,6 +640,7 @@ impl AppState {
         match p {
             PlayerEvent::StateChanged(s) => self.playback = s,
             PlayerEvent::TrackChanged(t) => {
+                self.duration = t.as_ref().map(|trk| trk.duration).unwrap_or_default();
                 self.now_playing = t;
                 self.position = TrackDuration::default();
             }
@@ -2039,7 +2040,25 @@ mod tests {
             duration: TrackDuration::from_secs(200),
         }));
         assert_eq!(s.position.as_secs(), 30);
-        assert_eq!(s.duration.as_secs(), 200);
+    }
+
+    #[test]
+    fn track_changed_updates_now_playing_and_duration_and_resets_position() {
+        let mut s = AppState {
+            position: TrackDuration::from_secs(45),
+            duration: TrackDuration::from_secs(148),
+            ..Default::default()
+        };
+        let mut track = Track::stub("v1", "Don't Copy My Flow");
+        track.duration = TrackDuration::from_secs(173);
+
+        s.apply(AppEvent::Player(PlayerEvent::TrackChanged(Some(track))));
+        assert_eq!(s.position.as_secs(), 0);
+        assert_eq!(s.duration.as_secs(), 173);
+        assert_eq!(
+            s.now_playing.as_ref().map(|t| t.title.as_str()),
+            Some("Don't Copy My Flow")
+        );
     }
 
     #[test]
