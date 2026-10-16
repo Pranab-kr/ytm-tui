@@ -1,71 +1,64 @@
 # ytm-tui
 
-A fast, keyboard-driven YouTube Music client for your terminal, written in Rust and powered by `mpv`.
+YouTube Music client for the terminal, written in Rust, with playback through `mpv`.
 
-Listen to music, search tracks, manage your playlists, download songs for offline listening, and control playback—all without leaving your terminal.
-
----
+Browse your Home feed, playlists, liked songs (Fav), albums and artists, search tracks, manage a queue, and play music, all without leaving the keyboard.
 
 ## Features
 
-- **Everything in one place**: Browse Home recommendations, your Playlists, Liked Songs (Fav), Albums, Artists, and Search.
-- **Offline Downloads & Caching**: Download tracks permanently with a single keypress (`d`), and enjoy automatic lookahead pre-caching for seamless, buffer-free playback.
-- **Vim & Arrow Navigation**: Fast navigation with `j`/`k` or arrows, visual range selection (`V`), number keys (`1`–`8`) to switch tabs, and mouse scroll support.
-- **Queue Control**: Reorder songs on the fly, play next (`e`), append to queue (`a`), or clear (`C`).
-- **Album Art & Themes**: Full-color album art in graphics-capable terminals (Kitty, Sixel, iTerm2), and 6 built-in themes (`tokyonight`, `gruvbox`, `nord`, `dracula`, `dawn`, `paper`).
-- **Focus Thumbnail Preview**: Small floating preview panel beside the selected track showing album art and metadata after resting cursor focus.
-- **Media Keys & MPRIS**: Control playback using your keyboard's media keys or your desktop environment's music widget.
-- **Guest Mode or Signed In**: Works instantly out of the box without an account, or sign in with your cookies to access your personal library.
-
----
+- Home recommendations, playlists, liked songs, albums, artists, and online search.
+- Download songs to disk with `d`, or pre-cache the queue lookahead for smooth playback.
+- Vim and arrow navigation: `j`/`k` or arrows, `g`/`G`, Ctrl+d/u, visual range selection (`V`), and `1`–`8` to switch tabs.
+- Full queue control: reorder, play next, append with `a`, and clear.
+- Album art in graphics-capable terminals (Kitty, Sixel, iTerm2) plus six themes: tokyonight, gruvbox, nord, dracula, dawn, paper.
+- A Focus Thumbnail Preview panel floats beside the selected track, showing album art and metadata after the cursor rests.
+- Media keys and MPRIS desktop integration.
+- Guest mode with no account, or sign in with cookies to reach your personal library.
 
 ## Installation
 
 ### Prerequisites
 
-`ytm-tui` requires **`mpv`** (for audio playback) and **`yt-dlp`** (for streaming/downloading audio).
+`ytm-tui` needs `mpv` (audio playback) and `yt-dlp` (streaming and downloading).
 
-- **Arch / Manjaro / EndeavourOS**:
+- Arch / Manjaro / EndeavourOS:
   ```bash
   sudo pacman -S mpv yt-dlp
   ```
-- **Debian / Ubuntu**:
+- Debian / Ubuntu:
   ```bash
   sudo apt update && sudo apt install mpv yt-dlp
   ```
-- **Fedora**:
+- Fedora:
   ```bash
   sudo dnf install mpv yt-dlp
   ```
-- **macOS** (Homebrew):
+- macOS (Homebrew):
   ```bash
   brew install mpv yt-dlp
   ```
-- **Windows**:
-  Run inside [WSL2 (Ubuntu)](https://learn.microsoft.com/en-us/windows/wsl/install):
+- Windows: run inside WSL2 (Ubuntu):
   ```bash
   sudo apt update && sudo apt install mpv yt-dlp
   ```
 
----
-
 ### Step 1: Install `ytm-tui`
 
-#### Option A: Download Pre-built Binary (Recommended)
+#### Option A: Download a pre-built binary (recommended)
 
-1. Go to the [**Releases**](https://github.com/Pranab-kr/ytm-tui/releases) page.
-2. Download the binary matching your operating system and CPU architecture (e.g., `ytm-tui-v0.2.0-x86_64-linux.tar.gz`).
-3. Extract the archive and place `ytm-tui` in your PATH:
+1. Open the [**Releases**](https://github.com/Pranab-kr/ytm-tui/releases) page.
+2. Download the archive matching your platform, for example `ytm-tui-v0.2.2-x86_64-linux.tar.gz`.
+3. Extract it and put `ytm-tui` on your PATH:
    ```bash
    tar -xzf ytm-tui-*.tar.gz
    cd ytm-tui-*/
    chmod +x ytm-tui
-   mv ytm-tui ~/.local/bin/   # or sudo mv ytm-tui /usr/local/bin/
+   mv ytm-tui ~/.local/bin/   # or: sudo mv ytm-tui /usr/local/bin/
    ```
 
-#### Option B: Build from Source (via Cargo)
+#### Option B: Build from source with Cargo
 
-If you have Rust installed:
+With Rust installed:
 
 ```bash
 git clone https://github.com/Pranab-kr/ytm-tui.git
@@ -74,160 +67,130 @@ cargo build --release
 cp target/release/ytm-tui ~/.local/bin/
 ```
 
----
-
 ### Step 2: Run
 
-You can launch the app immediately:
+Launch the app:
 
 ```bash
 ytm-tui
 ```
 
----
+## Getting started
 
-## Getting Started
+### 1. Guest mode (no login required)
 
-### 1. Guest Mode (No Login Required)
+Launch `ytm-tui` without signing in and it runs in guest mode. You can immediately search for tracks, albums and artists; stream them; and download songs with `d`. The personal library tabs (Home, Playlists, Liked Songs) prompt you to sign in.
 
-If you launch `ytm-tui` without signing in, it runs in **Guest Mode**. You can immediately:
-- Search for any song, album, or artist (`6` or `S`)
-- Stream tracks and manage your current queue
-- Download songs for offline listening (`d`)
+### 2. Sign in (access your personal library)
 
-Personal sections (Home, Playlists, Liked Songs) will prompt you to sign in.
+Export your YouTube Music session cookies once to reach your playlists, liked songs and recommendations:
 
----
-
-### 2. Sign In (Access Your Personal Library)
-
-To access your personal playlists, liked songs, and personalized recommendations, export your YouTube Music session cookies once:
-
-1. Open a **Private / Incognito** window in your browser (Chrome, Firefox, Brave, Edge, etc.).
-2. Go to [music.youtube.com](https://music.youtube.com) and log in to your Google account.
-3. Press `F12` to open Developer Tools, then click the **Network** tab.
-4. **Hold Shift and click the reload button** (or press `Ctrl+Shift+R` / `Cmd+Shift+R`). *Tip:* A normal reload is often served from browser cache and will not show the `cookie:` header; holding Shift forces a clean reload so the full request headers appear.
-5. In the list of requests, click the first request to `music.youtube.com`. Under **Headers** → **Request Headers**, copy the entire value of the `cookie:` header (it starts with something like `VISITOR_INFO1_LIVE=...; SAPISID=...`).
-6. Paste that single line into a text file at:
+1. Open a private/incognito window (Chrome, Firefox, Brave, Edge, etc.) and log in to [music.youtube.com](https://music.youtube.com).
+2. Press `F12`, then open the **Network** tab.
+3. **Hold Shift and click the reload button** (or Ctrl+Shift+R / Cmd+Shift+R). A normal reload is often served from cache, so the `cookie:` header is missing; holding Shift forces a clean reload with full request headers.
+4. Click the first request to `music.youtube.com`. Copy the entire value of the `cookie:` header under **Request Headers**. It starts with something like `VISITOR_INFO1_LIVE=...; SAPISID=...`.
+5. Save that single line to:
    - Linux: `~/.config/ytm-tui/cookies.txt`
    - macOS: `~/Library/Application Support/ytm-tui/cookies.txt`
-7. Close the private browser window without logging out.
-8. Configure `ytm-tui` to use your cookie file:
-   Run the following command. It will automatically generate an example configuration file (with all options and defaults commented out) if one does not exist, and open it in your editor:
-   ```bash
-   ytm-tui config
-   ```
-   *(Tip: If you only want to create the example configuration file without opening an editor, run `ytm-tui config --no-edit`).*
-
-   In the config file, uncomment or set:
+6. Close the private window without logging out.
+7. Run `ytm-tui config` to generate an example `config.toml` (commented out with defaults) and open it in your editor. (Pass `--no-edit` to only generate the file.) Set
    ```toml
    [auth]
    kind = "cookie"
    cookie_file = "~/.config/ytm-tui/cookies.txt"
    ```
-9. Verify your setup:
+8. Check the setup:
    ```bash
    ytm-tui playlists
    ```
-   If it lists your playlists, you are all set! Run `ytm-tui` to start listening.
+   If it lists your playlists, you are ready. Run `ytm-tui` to start listening.
 
----
+## Keybindings
 
-## Keybindings Cheat Sheet
-
-Press `?` inside the app at any time to see the live keybindings list.
+Press `?` inside the app for the live keybindings list. Full table:
 
 ### Navigation
+
 | Key | Action |
 |---|---|
-| `j` / `k` or `↓` / `↑` | Move down / up |
-| `h` / `l` or `←` / `→` | Back / Open item |
+| `j` / `k` or down / up | Move down / up |
+| `h` / `l` or left / right | Back / open item |
 | `Enter` | Play track or open playlist/album |
-| `1` – `8` | Switch tabs (Home, Playlists, Fav, Albums, Artists, Search, Queue, Downloads) |
+| `1`–`8` | Switch tabs (Home, Playlists, Fav, Albums, Artists, Search, Queue, Downloads) |
 | `Tab` | Next tab |
 | `g` / `G` | Jump to top / bottom |
-| `Ctrl+d` / `Ctrl+u` | Half-page down / up |
-| `zz` | Center screen on selected item |
-| `c` | Jump to currently playing track |
-| `q` / `Ctrl+c` | Quit |
+| Ctrl+d / Ctrl+u | Half-page down / up |
+| `zz` | Center screen on the selected item |
+| `c` | Jump to the currently playing track |
+| `q` / Ctrl+c | Quit |
 
 ### Playback
+
 | Key | Action |
 |---|---|
-| `Space` | Play / Pause |
-| `n` / `p` | Next / Previous track |
+| `Space` | Play / pause |
+| `n` / `p` | Next / previous track |
 | `f` / `b` | Seek forward / backward |
 | `+` / `-` | Volume up / down |
 | `m` | Mute toggle |
 | `s` | Shuffle toggle |
 | `r` | Repeat mode (off / track / all) |
 
-### Queue & Bulk Selection
+### Queue and bulk selection
+
 | Key | Action |
 |---|---|
-| `a` | Add selected track(s) or playlist to queue |
-| `e` | Play next (insert after current track) |
+| `a` | Add selected track(s) or playlist to the queue |
+| `e` | Play next (insert after the current track) |
 | `d` | Download selected track(s) for offline playback |
-| `v` | Mark / unmark single track |
-| `V` | Start visual range selection (use `j`/`k` to expand) |
+| `v` | Mark / unmark a single track |
+| `V` | Start visual range selection (`j`/`k` to expand) |
 | `Esc` | Cancel visual selection / clear filter |
 | `A` | Add marked track(s) to a playlist |
-| `J` / `K` | Move track down / up (inside Queue) |
-| `x` | Remove track from queue or playlist |
-| `C` | Clear entire queue |
+| `J` / `K` | Move a track down / up (inside the Queue) |
+| `x` | Remove a track from the queue or playlist |
+| `C` | Clear the entire queue |
 
-### Search & Filter
+### Search and filter
+
 | Key | Action |
 |---|---|
 | `/` | Filter the current view locally (instant) |
-| `S` | Search YouTube Music online — a title, an artist, **or a line of the lyrics** |
+| `S` | Search YouTube Music online: a title, an artist, **or a line of the lyrics** |
 
-`S` sends the query straight to YouTube Music, so typing a lyric line works:
+`S` sends the query straight to YouTube Music, so lyric lines work:
 `beneath the milky twilight` finds *Kiss Me*, `jinke sar ho ishq ki chhaon` finds
-*Chaiyya Chaiyya*, `ami chini go chini tomare` finds the Rabindra Sangeet. The
-matching happens in their backend, not here. The `/` filter by contrast is local:
-it only sees the titles and artists already on screen.
+*Chaiyya Chaiyya*, and `ami chini go chini tomare` finds the Rabindra Sangeet. The
+matching happens in their backend, not here. `S` filters titles, artists and lyrics;
+the `/` filter is local and only sees titles and artists already on screen.
 
-### Appearance & Settings
+### Appearance and settings
+
 | Key | Action |
 |---|---|
 | `t` | Cycle color themes |
-| `P` | Toggle focus preview panel |
-| `,` | Open configuration file |
-| `?` | Show help overlay |
+| `P` | Toggle the focus preview panel |
+| `,` | Open the configuration file |
+| `?` | Show the help overlay |
 
----
+## Offline music and downloads
 
-## Offline Music & Downloads
-
-- Press `d` on any track (or highlighted visual selection) to download it.
-- Switch to tab **8 (Downloads)** to view all downloaded songs.
-- When you play a song that has been downloaded, `ytm-tui` automatically plays the local file with **zero network latency**, even if you start playback from a remote playlist or search.
-
----
+- Press `d` on a track (or a highlighted visual selection) to download it.
+- Switch to tab **8 (Downloads)** to see all downloaded songs.
+- When you play a downloaded song, `ytm-tui` plays the local file, with zero network latency, even if you start it from a remote playlist or search.
 
 ## Configuration
 
-Run `ytm-tui config` to create or edit your configuration file:
+Run `ytm-tui config` to create or edit the configuration file:
 
 ```bash
 ytm-tui config
 ```
 
-If a configuration file doesn't exist yet, this command automatically writes an example `config.toml` file populated with every setting and keybinding commented out at its default value, then opens it in your default editor (`$EDITOR`).
+If the file does not exist, the command writes an example `config.toml` with every setting and keybinding commented out at its default, then opens it in your editor (`$EDITOR`). Run `ytm-tui config --no-edit` to only generate the file.
 
-> **Tip:** You can run `ytm-tui config --no-edit` to generate the example configuration file without opening an editor.
+The generated file documents every option: the startup tab, volume and seek steps, mouse support, vim keys, themes, colors, and any key rebinding.
 
-The generated file includes all available options with descriptions:
-- Change default startup tab (`playlists`, `home`, `songs`, etc.)
-- Adjust volume steps and seek increments
-- Enable or disable mouse support
-- Toggle vim keys (`h`/`j`/`k`/`l`)
-- Customize themes or colors
-- Rebind any keyboard shortcut
+## Terms of service and privacy
 
----
-
-## Terms of Service & Privacy
-
-`ytm-tui` connects to YouTube Music's internal web API and uses `yt-dlp` for media streaming. This software is intended for personal and educational use. There is **no telemetry, no tracking, and no external data collection**—all tokens, cookies, cache files, and downloads stay strictly on your local machine.
+`ytm-tui` uses YouTube Music's internal web API and `yt-dlp` for streaming. It is for personal and educational use. There is no telemetry, no tracking, and no data collection. Tokens, cookies, cache and downloads stay on your local machine.
