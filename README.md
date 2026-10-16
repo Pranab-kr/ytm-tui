@@ -13,6 +13,7 @@ Listen to music, search tracks, manage your playlists, download songs for offlin
 - **Vim & Arrow Navigation**: Fast navigation with `j`/`k` or arrows, visual range selection (`V`), number keys (`1`–`8`) to switch tabs, and mouse scroll support.
 - **Queue Control**: Reorder songs on the fly, play next (`e`), append to queue (`a`), or clear (`C`).
 - **Album Art & Themes**: Full-color album art in graphics-capable terminals (Kitty, Sixel, iTerm2), and 6 built-in themes (`tokyonight`, `gruvbox`, `nord`, `dracula`, `dawn`, `paper`).
+- **Focus Thumbnail Preview**: Small floating preview panel beside the selected track showing album art and metadata after resting cursor focus.
 - **Media Keys & MPRIS**: Control playback using your keyboard's media keys or your desktop environment's music widget.
 - **Guest Mode or Signed In**: Works instantly out of the box without an account, or sign in with your cookies to access your personal library.
 
