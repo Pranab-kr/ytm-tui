@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 /// Spec §6: sidebar ~22 columns. The bar's own height comes from the widget that
@@ -30,6 +30,14 @@ const ART_GAP: u16 = 2;
 /// The main pane keeps at least this much, or the art panel does not appear.
 /// A shredded track list is worse than absent art (FR-U5).
 const MAIN_MIN_WIDTH: u16 = 48;
+
+/// Width of the floating thumbnail preview panel.
+pub const PREVIEW_WIDTH: u16 = 24;
+/// Height of the floating thumbnail preview panel.
+pub const PREVIEW_HEIGHT: u16 = 12;
+/// Minimum list area width required before the floating preview panel will be drawn.
+/// A list narrower than this would be obscured and made unreadable by the preview panel.
+pub const PREVIEW_MIN_LIST_WIDTH: u16 = 48;
 
 /// What sits under a mouse click. Hit-testing and `list_rows_for` derive from
 /// the same layout constants `render` does, or they drift and a click selects
@@ -165,7 +173,7 @@ pub fn render(f: &mut Frame, s: &AppState, t: &Theme, km: &KeyMap, art: &mut art
 
     sidebar::draw(f, cols[0], s, t);
     draw_rule(f, cols[1], t);
-    draw_main(f, main_area, s, t);
+    draw_main(f, main_area, s, t, art);
     if let Some(a) = art_area {
         art::draw(f, a, art_url.as_deref(), art);
     }
@@ -195,7 +203,7 @@ fn draw_rule(f: &mut Frame, area: Rect, t: &Theme) {
 /// The main pane: a heading row, then the list for whichever pane is active. The
 /// match is exhaustive on `Pane` rather than ending in a `_` arm, so adding a pane
 /// later fails to compile instead of silently rendering nothing.
-fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::ArtCache) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -268,6 +276,100 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
         Pane::Artists => playlists::draw_artists(f, list_row, s, t),
         Pane::Downloads => tracklist::draw(f, list_row, s, t),
     }
+
+    draw_preview_panel(f, list_row, s, t, art);
+}
+
+/// A floating preview panel showing the focused row's album art thumbnail and caption.
+///
+/// Drawn inside `list_row` only (never over the sidebar, rule column, or now-playing bar),
+/// right-aligned toward the list's right edge, top edge aligned with the focused row,
+/// clamped within the list area.
+///
+/// Strictly guards on:
+/// - ArtCache is enabled
+/// - Preview dwell timer has elapsed (250 ms)
+/// - List area width >= PREVIEW_MIN_LIST_WIDTH and height >= PREVIEW_HEIGHT
+/// - Focused row is a track with a thumbnail URL
+/// - Thumbnail bytes have arrived in `art.get_preview(url)`
+/// - Focused row is currently visible on screen
+fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::ArtCache) {
+    if !art.is_enabled() {
+        return;
+    }
+    if !s.is_preview_dwelling_elapsed() {
+        return;
+    }
+    if area.width < PREVIEW_MIN_LIST_WIDTH || area.height < PREVIEW_HEIGHT {
+        return;
+    }
+    let Some(track) = s.preview_target() else {
+        return;
+    };
+    let Some(ref url) = track.thumbnail_url else {
+        return;
+    };
+    if art.get_preview(url).is_none() {
+        return;
+    }
+    let track_count = s.visible_track_count();
+    if track_count == 0 {
+        return;
+    }
+    let (start, end) = tracklist::visible_window(
+        s.selected,
+        s.scroll_offset,
+        area.height as usize,
+        track_count,
+    );
+    if s.selected < start || s.selected >= end {
+        return;
+    }
+
+    let row_offset = (s.selected - start) as u16;
+    let row_y = area.y + row_offset;
+    let max_y = (area.y + area.height).saturating_sub(PREVIEW_HEIGHT);
+    let panel_y = row_y.min(max_y).max(area.y);
+    let panel_x = area.x + area.width.saturating_sub(PREVIEW_WIDTH);
+    let panel_area = Rect::new(panel_x, panel_y, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.fg_dim));
+    let inner = block.inner(panel_area);
+
+    f.render_widget(Clear, panel_area);
+    f.render_widget(block, panel_area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(inner);
+
+    art::draw_preview(f, chunks[0], Some(url), art);
+
+    let inner_w = chunks[1].width as usize;
+    let caption_lines = vec![
+        Line::from(Span::styled(
+            truncate_to_width(&track.title, inner_w),
+            Style::default()
+                .fg(t.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            truncate_to_width(&track.artist_display(), inner_w),
+            Style::default().fg(t.fg_dim),
+        )),
+        Line::from(Span::styled(
+            truncate_to_width(&track.duration.to_string(), inner_w),
+            Style::default().fg(t.fg_dim),
+        )),
+    ];
+    f.render_widget(Paragraph::new(caption_lines), chunks[1]);
 }
 
 /// The results below the query row, which `draw_main` has already drawn.
@@ -650,5 +752,194 @@ mod tests {
             click_target(area, 40, 200, false, false, false),
             ClickTarget::Nothing
         );
+    }
+
+    #[test]
+    fn rendering_with_no_loaded_preview_is_byte_identical_to_feature_absent() {
+        let s = AppState {
+            pane: Pane::Songs,
+            focus: crate::app::Focus::Main,
+            tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/art.jpg".into()),
+                ..Track::stub("v1", "Roygbiv")
+            }],
+            elapsed_ms: 500, // Dwell has passed
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t1 = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut t2 = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        // With art disabled (feature completely inactive)
+        let mut art_disabled = ArtCache::disabled();
+        t1.draw(|f| render(f, &s, &theme, &km, &mut art_disabled))
+            .unwrap();
+
+        // With art enabled, but thumbnail not loaded into preview cache
+        let mut art_enabled = ArtCache::for_test();
+        t2.draw(|f| render(f, &s, &theme, &km, &mut art_enabled))
+            .unwrap();
+
+        assert_eq!(
+            t1.backend().buffer(),
+            t2.backend().buffer(),
+            "Absence of preview bytes must change NOTHING else on screen (FR-U5)"
+        );
+    }
+
+    #[test]
+    fn preview_panel_appears_at_cursor_row_with_border_and_caption() {
+        let s = AppState {
+            pane: Pane::Songs,
+            focus: crate::app::Focus::Main,
+            tracks: vec![
+                Track::stub("v0", "First Track"),
+                Track {
+                    thumbnail_url: Some("https://example.com/target.jpg".into()),
+                    artists: vec!["Boards of Canada".into()],
+                    duration: ytm_core::TrackDuration::from_secs(149),
+                    ..Track::stub("v1", "Roygbiv")
+                },
+                Track::stub("v2", "Third Track"),
+            ],
+            selected: 1,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/target.jpg", img);
+
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let theme = Theme::default();
+        let km = KeyMap::default();
+        t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+
+        let buf = t.backend().buffer();
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("Roygbiv"),
+            "preview caption must contain title"
+        );
+        assert!(
+            text.contains("Boards of Canada"),
+            "preview caption must contain artist"
+        );
+        assert!(
+            text.contains("2:29"),
+            "preview caption must contain duration"
+        );
+
+        let panel_x = 100 - PREVIEW_WIDTH;
+        let list_top = list_top_for(false, false, true);
+        let expected_y = list_top + 1;
+        assert_eq!(buf[(panel_x, expected_y)].symbol(), "┌");
+    }
+
+    #[test]
+    fn small_or_degenerate_terminal_draws_no_preview_and_does_not_panic() {
+        let s = AppState {
+            pane: Pane::Songs,
+            focus: crate::app::Focus::Main,
+            tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/target.jpg".into()),
+                ..Track::stub("v1", "Roygbiv")
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/target.jpg", img);
+
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        let mut t_tiny = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        t_tiny
+            .draw(|f| render(f, &s, &theme, &km, &mut art))
+            .unwrap();
+        let text_tiny: String = t_tiny
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text_tiny.contains('┌'),
+            "degenerate terminal must not draw preview border"
+        );
+
+        let mut t_small = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        t_small
+            .draw(|f| render(f, &s, &theme, &km, &mut art))
+            .unwrap();
+        let text_small: String = t_small
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text_small.contains('┌'),
+            "narrow list must not draw preview panel"
+        );
+    }
+
+    #[test]
+    fn cjk_and_emoji_caption_truncates_to_panel_width_cleanly() {
+        let title = "日本語タイトルと絵文字🎵🎶🎧非常に長いタイトルです";
+        let s = AppState {
+            pane: Pane::Songs,
+            focus: crate::app::Focus::Main,
+            tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/target.jpg".into()),
+                artists: vec!["アーティスト名⭐".into()],
+                ..Track::stub("v1", title)
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/target.jpg", img);
+
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let theme = Theme::default();
+        let km = KeyMap::default();
+        t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+
+        let buf = t.backend().buffer();
+        let list_top = list_top_for(false, false, true);
+        assert_eq!(buf[(99, list_top)].symbol(), "┐");
+        assert_eq!(buf[(99, list_top + PREVIEW_HEIGHT - 1)].symbol(), "┘");
+        for y in (list_top + 1)..(list_top + PREVIEW_HEIGHT - 1) {
+            assert_eq!(
+                buf[(99, y)].symbol(),
+                "│",
+                "right border preserved without overflow at row {y}"
+            );
+        }
     }
 }

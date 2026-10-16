@@ -957,7 +957,7 @@ impl AppState {
     }
 
     /// Count filtered tracks without cloning the list on every frame.
-    fn visible_track_count(&self) -> usize {
+    pub fn visible_track_count(&self) -> usize {
         let source = self.unfiltered_tracks();
         if self.filter.is_empty() {
             return source.len();
