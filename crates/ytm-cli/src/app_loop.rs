@@ -1726,6 +1726,13 @@ pub async fn run(
                     art.insert(&url, *image);
                     continue;
                 }
+                if let AppEvent::PreviewArtFailed { url } = &ae {
+                    art.mark_preview_failed(url);
+                }
+                if let AppEvent::PreviewArtLoaded { url, image } = ae {
+                    art.insert_preview(&url, *image);
+                    continue;
+                }
                 if let AppEvent::EnqueueTracks {
                     tracks,
                     play_next,
@@ -1820,6 +1827,11 @@ pub async fn run(
                     && let Some(url) = art_tick(&mut art, &state)
                 {
                     spawn_art_fetch(url, app_tx.clone());
+                }
+                if art.is_enabled()
+                    && let Some(url) = preview_art_tick(&mut art, &state)
+                {
+                    spawn_preview_art_fetch(url, app_tx.clone());
                 }
             }
         }
@@ -2094,6 +2106,38 @@ pub fn spawn_cache_writer(cache: ytm_core::cache::Cache) -> std::sync::mpsc::Sen
 fn art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState) -> Option<String> {
     let url = state.art_url()?;
     art.should_fetch(&url).then_some(url)
+}
+
+/// The URL to fetch preview art for, if any, exactly once per URL.
+///
+/// Respects the dwell timer: the row must have rested for `PREVIEW_DELAY_MS`.
+/// Moving the cursor restarts the dwell, preventing burst downloads when scrolling.
+fn preview_art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState) -> Option<String> {
+    if !state.is_preview_dwelling_elapsed() {
+        return None;
+    }
+    let track = state.preview_target()?;
+    let url = track.thumbnail_url?;
+    art.should_fetch_preview(&url).then_some(url)
+}
+
+/// Fetch and decode one preview thumbnail off the UI thread (NFR-2).
+///
+/// Every failure path posts `PreviewArtFailed`, stopping the URL from being retried.
+fn spawn_preview_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let ev = match fetch_art(&url).await {
+            Ok(image) => AppEvent::PreviewArtLoaded {
+                url: url.clone(),
+                image: Box::new(image),
+            },
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "preview art unavailable");
+                AppEvent::PreviewArtFailed { url: url.clone() }
+            }
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// Fetch and decode one thumbnail off the UI thread (NFR-2). Decoding is CPU work,
@@ -3838,6 +3882,55 @@ mod tests {
         assert!(
             art_tick(&mut art, &s).is_none(),
             "a dead thumbnail must not be retried every tick"
+        );
+    }
+
+    #[test]
+    fn preview_art_dwell_and_fetch_behavior() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        let mut s = AppState {
+            pane: Pane::Songs,
+            focus: Focus::Main,
+            tracks: vec![ytm_core::Track {
+                thumbnail_url: Some("https://example.com/preview.jpg".into()),
+                ..ytm_core::Track::stub("v1", "Song Title")
+            }],
+            selected: 0,
+            elapsed_ms: 100,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+
+        // 1. Below dwell delay: no fetch spawned
+        assert!(
+            preview_art_tick(&mut art, &s).is_none(),
+            "below dwell delay, no preview fetch should be spawned"
+        );
+
+        // 2. At or after dwell delay: exactly one fetch spawned
+        s.elapsed_ms = 300;
+        assert_eq!(
+            preview_art_tick(&mut art, &s).as_deref(),
+            Some("https://example.com/preview.jpg"),
+            "at dwell delay, preview fetch should be spawned"
+        );
+
+        // 3. Second tick: does not re-fetch the same URL
+        assert!(
+            preview_art_tick(&mut art, &s).is_none(),
+            "second tick must not re-fetch the in-flight URL"
+        );
+
+        // 4. PreviewArtFailed stops retries
+        let mut art2 = ytm_tui::widgets::art::ArtCache::disabled();
+        assert_eq!(
+            preview_art_tick(&mut art2, &s).as_deref(),
+            Some("https://example.com/preview.jpg")
+        );
+        art2.mark_preview_failed("https://example.com/preview.jpg");
+        assert!(
+            preview_art_tick(&mut art2, &s).is_none(),
+            "a failed preview URL must not be retried"
         );
     }
 
