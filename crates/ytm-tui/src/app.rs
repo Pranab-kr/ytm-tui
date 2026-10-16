@@ -59,8 +59,24 @@ pub enum HomeRow {
 /// Pixels to request for album art. Comfortably over the ~240px a 24-column
 /// panel needs, so the art stays sharp if the panel or the font grows.
 pub const ART_PX: u32 = 600;
+/// Thumbnail size requested for the floating preview panel.
+pub const PREVIEW_PX: u32 = 240;
 /// Dwell time before fetching or showing the floating thumbnail preview.
 pub const PREVIEW_DELAY_MS: u64 = 250;
+
+/// Target for the floating thumbnail preview panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewTarget {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub detail: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
+fn preview_thumbnail(url: Option<&str>) -> Option<String> {
+    url.filter(|u| !u.trim().is_empty())
+        .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
@@ -227,7 +243,7 @@ impl AppState {
             self.open_artist.clone(),
             self.filter.clone(),
             self.search_query.clone(),
-            self.preview_target().map(|t| t.video_id),
+            self.preview_target(),
         );
         let is_move = if let AppEvent::Input(ref a) = ev {
             matches!(
@@ -380,7 +396,7 @@ impl AppState {
             self.open_artist.clone(),
             self.filter.clone(),
             self.search_query.clone(),
-            self.preview_target().map(|t| t.video_id),
+            self.preview_target(),
         );
         if is_move || prev_key != curr_key {
             self.preview_since_ms = self.elapsed_ms;
@@ -1603,14 +1619,77 @@ impl AppState {
         self.visual_anchor.is_some()
     }
 
-    /// Track targeted for floating thumbnail preview. Allowed only when the
+    fn preview_target_from_track(t: Track) -> PreviewTarget {
+        let artist = t.artist_display();
+        let subtitle = if artist.trim().is_empty() {
+            None
+        } else {
+            Some(artist)
+        };
+        PreviewTarget {
+            title: t.title,
+            subtitle,
+            detail: Some(t.duration.to_string()),
+            thumbnail_url: preview_thumbnail(t.thumbnail_url.as_deref()),
+        }
+    }
+
+    /// Target for floating thumbnail preview. Allowed only when the
     /// list owns the cursor (`focus == Focus::Main`), no modal is open, and
-    /// the row is a track on screen.
-    pub fn preview_target(&self) -> Option<Track> {
-        if self.focus != Focus::Main || self.modal.is_some() || self.pane == Pane::Home {
+    /// the row is currently focused on screen.
+    pub fn preview_target(&self) -> Option<PreviewTarget> {
+        if self.focus != Focus::Main || self.modal.is_some() {
             return None;
         }
-        self.selected_track()
+        match self.pane {
+            Pane::Home => {
+                let item = self.selected_home_item()?;
+                let sub = item.subtitle.trim();
+                Some(PreviewTarget {
+                    title: item.title.clone(),
+                    subtitle: if sub.is_empty() {
+                        None
+                    } else {
+                        Some(sub.to_owned())
+                    },
+                    detail: Some(item.kind_label().to_owned()),
+                    thumbnail_url: preview_thumbnail(item.thumbnail_url.as_deref()),
+                })
+            }
+            Pane::Playlists if self.open_playlist.is_none() => {
+                let p = self.selected_playlist()?;
+                Some(PreviewTarget {
+                    title: p.title,
+                    subtitle: None,
+                    detail: p.track_count.map(|n| format!("{n} songs")),
+                    thumbnail_url: preview_thumbnail(p.thumbnail_url.as_deref()),
+                })
+            }
+            Pane::Albums if self.open_album.is_none() => {
+                let a = self.selected_album()?;
+                let subtitle = if a.artists.is_empty() {
+                    None
+                } else {
+                    Some(a.artists.join(", "))
+                };
+                Some(PreviewTarget {
+                    title: a.title,
+                    subtitle,
+                    detail: a.year,
+                    thumbnail_url: preview_thumbnail(a.thumbnail_url.as_deref()),
+                })
+            }
+            Pane::Artists if self.open_artist.is_none() => {
+                let a = self.selected_artist()?;
+                Some(PreviewTarget {
+                    title: a.name,
+                    subtitle: None,
+                    detail: a.subscribers,
+                    thumbnail_url: preview_thumbnail(a.thumbnail_url.as_deref()),
+                })
+            }
+            _ => self.selected_track().map(Self::preview_target_from_track),
+        }
     }
 
     /// Reset the dwell timer so the preview appears only after cursor rests for `PREVIEW_DELAY_MS`.
@@ -3727,60 +3806,25 @@ mod tests {
     }
 
     #[test]
-    fn preview_target_is_none_on_list_panes_unfocused_or_modal_open() {
+    fn preview_target_is_none_when_unfocused_or_modal_open() {
         let mut s = AppState {
             pane: Pane::Playlists,
             open_playlist: None,
             playlists: vec![Playlist::stub("p1", "P1")],
-            focus: Focus::Main,
+            focus: Focus::Sidebar,
             ..Default::default()
         };
         assert!(
             s.preview_target().is_none(),
-            "playlist list has no track target"
+            "target is none when focus is Sidebar"
         );
 
-        s.pane = Pane::Albums;
-        s.albums = vec![Album {
-            id: AlbumId::from("a1"),
-            title: "Album".into(),
-            artists: vec![],
-            year: None,
-            thumbnail_url: None,
-        }];
-        assert!(
-            s.preview_target().is_none(),
-            "albums list has no track target"
-        );
-
-        s.pane = Pane::Artists;
-        s.artists = vec![Artist {
-            id: ArtistId::from("ar1"),
-            name: "Artist".into(),
-            subscribers: None,
-            thumbnail_url: None,
-        }];
-        assert!(
-            s.preview_target().is_none(),
-            "artists list has no track target"
-        );
-
-        // Focus not Main:
-        s.pane = Pane::Search;
-        s.search_results = vec![Track::stub("v1", "Track 1")];
         s.focus = Focus::SearchInput;
         assert!(
             s.preview_target().is_none(),
             "target is none when focus is SearchInput"
         );
 
-        s.focus = Focus::Sidebar;
-        assert!(
-            s.preview_target().is_none(),
-            "target is none when focus is Sidebar"
-        );
-
-        // Modal open:
         s.focus = Focus::Main;
         s.modal = Some(Modal::Help);
         assert!(
@@ -3790,35 +3834,266 @@ mod tests {
     }
 
     #[test]
-    fn preview_target_matches_drawn_row_in_search_and_open_playlist() {
+    fn preview_target_matches_home_item_and_heading_is_none() {
         let mut s = AppState {
-            pane: Pane::Search,
+            pane: Pane::Home,
             focus: Focus::Main,
-            search_results: vec![
-                Track::stub("v1", "Search Track 1"),
-                Track::stub("v2", "Search Track 2"),
+            home_rows: vec![
+                HomeRow::Heading("Quick Picks".into()),
+                HomeRow::Item(HomeItem {
+                    title: "Home Track Title".into(),
+                    subtitle: "Home Artist Subtitle".into(),
+                    target: HomeTarget::Track(VideoId::from("ht1")),
+                    thumbnail_url: Some("https://example.com/h.jpg=w120-h120-l90-rj".into()),
+                }),
             ],
-            selected: 1,
+            selected: 0,
             ..Default::default()
         };
-        assert_eq!(s.preview_target(), s.selected_track());
-        assert_eq!(
-            s.preview_target().as_ref(),
-            s.visible_tracks().get(s.selected).copied()
+        // Heading row: selected_home_item() is None -> NO target
+        assert!(s.selected_home_item().is_none());
+        assert!(
+            s.preview_target().is_none(),
+            "heading row must show no preview"
         );
 
-        s.pane = Pane::Playlists;
-        s.open_playlist = Some(PlaylistId::from("p1"));
-        s.tracks = vec![
-            Track::stub("pt1", "Playlist Track 1"),
-            Track::stub("pt2", "Playlist Track 2"),
-        ];
-        s.selected = 0;
-        assert_eq!(s.preview_target(), s.selected_track());
+        // Item row:
+        s.selected = 1;
+        let item = s.selected_home_item().expect("item selected");
+        let target = s.preview_target().expect("home item target must exist");
+        assert_eq!(target.title, item.title);
         assert_eq!(
-            s.preview_target().as_ref(),
-            s.visible_tracks().get(s.selected).copied()
+            target.subtitle.as_deref(),
+            if item.subtitle.is_empty() {
+                None
+            } else {
+                Some(item.subtitle.as_str())
+            }
         );
+        assert_eq!(target.detail.as_deref(), Some(item.kind_label()));
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            item.thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+    }
+
+    #[test]
+    fn preview_target_matches_playlists_list_and_open_playlist() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![Playlist {
+                thumbnail_url: Some("https://example.com/p.jpg=w120-h120-l90-rj".into()),
+                track_count: Some(15),
+                ..Playlist::stub("p1", "My Playlist")
+            }],
+            selected: 0,
+            ..Default::default()
+        };
+        // Playlists list (unopened)
+        let playlist = s.selected_playlist().expect("playlist selected");
+        let target = s.preview_target().expect("playlist target must exist");
+        assert_eq!(target.title, playlist.title);
+        assert_eq!(target.subtitle, None);
+        assert_eq!(
+            target.detail,
+            playlist.track_count.map(|n| format!("{n} songs"))
+        );
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            playlist
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+
+        // Open playlist: shows track
+        s.open_playlist = Some(PlaylistId::from("p1"));
+        s.tracks = vec![Track {
+            thumbnail_url: Some("https://example.com/pt.jpg=w120-h120-l90-rj".into()),
+            artists: vec!["Daft Punk".into()],
+            duration: TrackDuration::from_secs(240),
+            ..Track::stub("pt1", "Track 1")
+        }];
+        s.selected = 0;
+        let track = s.visible_tracks()[s.selected];
+        let target = s
+            .preview_target()
+            .expect("open playlist track target must exist");
+        assert_eq!(target.title, track.title);
+        assert_eq!(target.subtitle.as_deref(), Some("Daft Punk"));
+        assert_eq!(target.detail.as_deref(), Some("4:00"));
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            track
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+    }
+
+    #[test]
+    fn preview_target_matches_albums_list_and_open_album() {
+        let mut s = AppState {
+            pane: Pane::Albums,
+            focus: Focus::Main,
+            albums: vec![Album {
+                id: AlbumId::from("a1"),
+                title: "Discovery".into(),
+                artists: vec!["Daft Punk".into()],
+                year: Some("2001".into()),
+                thumbnail_url: Some("https://example.com/a.jpg=w120-h120-l90-rj".into()),
+            }],
+            selected: 0,
+            ..Default::default()
+        };
+        // Albums list (unopened)
+        let album = s.selected_album().expect("album selected");
+        let target = s.preview_target().expect("album target must exist");
+        assert_eq!(target.title, album.title);
+        assert_eq!(
+            target.subtitle,
+            if album.artists.is_empty() {
+                None
+            } else {
+                Some(album.artists.join(", "))
+            }
+        );
+        assert_eq!(target.detail, album.year);
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            album
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+
+        // Open album: shows track
+        s.open_album = Some((AlbumId::from("a1"), "Discovery".into()));
+        s.album_tracks = vec![Track {
+            thumbnail_url: Some("https://example.com/at.jpg=w120-h120-l90-rj".into()),
+            artists: vec!["Daft Punk".into()],
+            duration: TrackDuration::from_secs(320),
+            ..Track::stub("at1", "One More Time")
+        }];
+        s.selected = 0;
+        let track = s.visible_tracks()[s.selected];
+        let target = s
+            .preview_target()
+            .expect("open album track target must exist");
+        assert_eq!(target.title, track.title);
+        assert_eq!(target.subtitle.as_deref(), Some("Daft Punk"));
+        assert_eq!(target.detail.as_deref(), Some("5:20"));
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            track
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+    }
+
+    #[test]
+    fn preview_target_matches_artists_list_and_open_artist() {
+        let mut s = AppState {
+            pane: Pane::Artists,
+            focus: Focus::Main,
+            artists: vec![Artist {
+                id: ArtistId::from("ar1"),
+                name: "Daft Punk".into(),
+                subscribers: Some("3.5M subscribers".into()),
+                thumbnail_url: Some("https://example.com/ar.jpg=w120-h120-l90-rj".into()),
+            }],
+            selected: 0,
+            ..Default::default()
+        };
+        // Artists list (unopened)
+        let artist = s.selected_artist().expect("artist selected");
+        let target = s.preview_target().expect("artist target must exist");
+        assert_eq!(target.title, artist.name);
+        assert_eq!(target.subtitle, None);
+        assert_eq!(target.detail, artist.subscribers);
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            artist
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+
+        // Open artist: shows track
+        s.open_artist = Some((ArtistId::from("ar1"), "Daft Punk".into()));
+        s.artist_tracks = vec![Track {
+            thumbnail_url: Some("https://example.com/artr.jpg=w120-h120-l90-rj".into()),
+            artists: vec!["Daft Punk".into()],
+            duration: TrackDuration::from_secs(215),
+            ..Track::stub("artr1", "Harder Better Faster Stronger")
+        }];
+        s.selected = 0;
+        let track = s.visible_tracks()[s.selected];
+        let target = s
+            .preview_target()
+            .expect("open artist track target must exist");
+        assert_eq!(target.title, track.title);
+        assert_eq!(target.subtitle.as_deref(), Some("Daft Punk"));
+        assert_eq!(target.detail.as_deref(), Some("3:35"));
+        assert_eq!(
+            target.thumbnail_url.as_deref(),
+            track
+                .thumbnail_url
+                .as_deref()
+                .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                .as_deref()
+        );
+    }
+
+    #[test]
+    fn preview_target_matches_search_fav_downloads_and_queue() {
+        let track = Track {
+            thumbnail_url: Some("https://example.com/t.jpg=w120-h120-l90-rj".into()),
+            artists: vec!["Artist".into()],
+            duration: TrackDuration::from_secs(180),
+            ..Track::stub("t1", "Track")
+        };
+
+        for pane in [Pane::Search, Pane::Songs, Pane::Downloads, Pane::Queue] {
+            let mut s = AppState {
+                pane,
+                focus: Focus::Main,
+                ..Default::default()
+            };
+            match pane {
+                Pane::Search => s.search_results = vec![track.clone()],
+                Pane::Songs => s.tracks = vec![track.clone()],
+                Pane::Downloads => s.downloaded_tracks = vec![track.clone()],
+                Pane::Queue => s.queue = vec![track.clone()],
+                _ => {}
+            }
+            s.selected = 0;
+            let drawn_track = s.visible_tracks()[s.selected];
+            let target = s
+                .preview_target()
+                .unwrap_or_else(|| panic!("target missing for pane {pane:?}"));
+            assert_eq!(target.title, drawn_track.title);
+            assert_eq!(target.subtitle.as_deref(), Some("Artist"));
+            assert_eq!(target.detail.as_deref(), Some("3:00"));
+            assert_eq!(
+                target.thumbnail_url.as_deref(),
+                drawn_track
+                    .thumbnail_url
+                    .as_deref()
+                    .map(|u| ytm_core::mapping::thumbnail_at_size(u, PREVIEW_PX))
+                    .as_deref()
+            );
+        }
     }
 
     #[test]

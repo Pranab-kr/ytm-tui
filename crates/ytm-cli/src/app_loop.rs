@@ -2116,8 +2116,8 @@ fn preview_art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState)
     if !state.is_preview_dwelling_elapsed() {
         return None;
     }
-    let track = state.preview_target()?;
-    let url = track.thumbnail_url?;
+    let target = state.preview_target()?;
+    let url = target.thumbnail_url?;
     art.should_fetch_preview(&url).then_some(url)
 }
 

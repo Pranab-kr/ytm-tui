@@ -303,24 +303,24 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
     if area.width < PREVIEW_MIN_LIST_WIDTH || area.height < PREVIEW_HEIGHT {
         return;
     }
-    let Some(track) = s.preview_target() else {
+    let Some(target) = s.preview_target() else {
         return;
     };
-    let Some(ref url) = track.thumbnail_url else {
+    let Some(ref url) = target.thumbnail_url else {
         return;
     };
     if art.get_preview(url).is_none() {
         return;
     }
-    let track_count = s.visible_track_count();
-    if track_count == 0 {
+    let total_rows = s.list_len();
+    if total_rows == 0 {
         return;
     }
     let (start, end) = tracklist::visible_window(
         s.selected,
         s.scroll_offset,
         area.height as usize,
-        track_count,
+        total_rows,
     );
     if s.selected < start || s.selected >= end {
         return;
@@ -329,6 +329,9 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
     let row_offset = (s.selected - start) as u16;
     let row_y = area.y + row_offset;
     let max_y = (area.y + area.height).saturating_sub(PREVIEW_HEIGHT);
+    // Placement rules: top edge at the focused row, right-aligned inside the list area,
+    // clamped to stay inside the list area. The only case where the caption is not on
+    // the row is the bottom clamp at the end of a list, which is unavoidable.
     let panel_y = row_y.min(max_y).max(area.y);
     let panel_x = area.x + area.width.saturating_sub(PREVIEW_WIDTH);
     let panel_area = Rect::new(panel_x, panel_y, PREVIEW_WIDTH, PREVIEW_HEIGHT);
@@ -345,31 +348,33 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
         return;
     }
 
+    // Caption first, image last: the caption title sits immediately at the top
+    // of the panel, aligned with the focused row.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(inner);
 
-    art::draw_preview(f, chunks[0], Some(url), art);
-
-    let inner_w = chunks[1].width as usize;
+    let inner_w = chunks[0].width as usize;
     let caption_lines = vec![
         Line::from(Span::styled(
-            truncate_to_width(&track.title, inner_w),
+            truncate_to_width(&target.title, inner_w),
             Style::default()
                 .fg(t.fg_bright)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            truncate_to_width(&track.artist_display(), inner_w),
+            truncate_to_width(target.subtitle.as_deref().unwrap_or(""), inner_w),
             Style::default().fg(t.fg_dim),
         )),
         Line::from(Span::styled(
-            truncate_to_width(&track.duration.to_string(), inner_w),
+            truncate_to_width(target.detail.as_deref().unwrap_or(""), inner_w),
             Style::default().fg(t.fg_dim),
         )),
     ];
-    f.render_widget(Paragraph::new(caption_lines), chunks[1]);
+    f.render_widget(Paragraph::new(caption_lines), chunks[0]);
+
+    art::draw_preview(f, chunks[1], Some(url), art);
 }
 
 /// The results below the query row, which `draw_main` has already drawn.
@@ -436,9 +441,12 @@ fn pane_title(s: &AppState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{Focus, HomeRow};
     use crate::widgets::art::ArtCache;
     use ratatui::{Terminal, backend::TestBackend};
-    use ytm_core::Track;
+    use ytm_core::{
+        Album, AlbumId, Artist, ArtistId, HomeItem, HomeTarget, Playlist, Track, VideoId,
+    };
 
     fn frame_text(s: &AppState, art: &mut ArtCache, w: u16, h: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -841,6 +849,20 @@ mod tests {
         let list_top = list_top_for(false, false, true);
         let expected_y = list_top + 1;
         assert_eq!(buf[(panel_x, expected_y)].symbol(), "┌");
+
+        // Regression test: the caption must sit first inside the panel (immediately below
+        // the top border at the focused row), not pushed down 7+ rows below the image.
+        let expected_caption_y = expected_y + 1;
+        let caption_row = (list_top..list_top + PREVIEW_HEIGHT)
+            .find(|&y| {
+                let row_str: String = (panel_x..100).map(|x| buf[(x, y)].symbol()).collect();
+                row_str.contains("Roygbiv")
+            })
+            .expect("caption title must be rendered in preview panel");
+        assert_eq!(
+            caption_row, expected_caption_y,
+            "caption title must land at top of preview panel (screen row {expected_caption_y}), but was at row {caption_row}"
+        );
     }
 
     #[test]
@@ -941,5 +963,246 @@ mod tests {
                 "right border preserved without overflow at row {y}"
             );
         }
+    }
+
+    #[test]
+    fn preview_panel_renders_for_playlist_album_artist_and_home_rows() {
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/item.jpg=w240-h240-l90-rj", img);
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        // 1. Playlist row
+        let s_playlist = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![Playlist {
+                thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+                track_count: Some(42),
+                ..Playlist::stub("p1", "Electro Hits")
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t1 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t1.draw(|f| render(f, &s_playlist, &theme, &km, &mut art))
+            .unwrap();
+        let text1: String = t1
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text1.contains("Electro Hits"),
+            "playlist title in preview panel"
+        );
+        assert!(
+            text1.contains("42 songs"),
+            "playlist count in preview panel"
+        );
+
+        // 2. Album row
+        let s_album = AppState {
+            pane: Pane::Albums,
+            focus: Focus::Main,
+            albums: vec![Album {
+                id: AlbumId::from("a1"),
+                title: "Random Access Memories".into(),
+                artists: vec!["Daft Punk".into()],
+                year: Some("2013".into()),
+                thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t2 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t2.draw(|f| render(f, &s_album, &theme, &km, &mut art))
+            .unwrap();
+        let text2: String = t2
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text2.contains("Random Access Memories"),
+            "album title in preview panel"
+        );
+        assert!(text2.contains("2013"), "album year in preview panel");
+
+        // 3. Artist row
+        let s_artist = AppState {
+            pane: Pane::Artists,
+            focus: Focus::Main,
+            artists: vec![Artist {
+                id: ArtistId::from("ar1"),
+                name: "Justice".into(),
+                subscribers: Some("1.2M subscribers".into()),
+                thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t3 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t3.draw(|f| render(f, &s_artist, &theme, &km, &mut art))
+            .unwrap();
+        let text3: String = t3
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text3.contains("Justice"), "artist name in preview panel");
+        assert!(
+            text3.contains("1.2M subscribers"),
+            "artist subscribers in preview panel"
+        );
+
+        // 4. Home item
+        let s_home = AppState {
+            pane: Pane::Home,
+            focus: Focus::Main,
+            home_rows: vec![
+                HomeRow::Heading("Quick Picks".into()),
+                HomeRow::Item(HomeItem {
+                    title: "Voyager".into(),
+                    subtitle: "Daft Punk".into(),
+                    target: HomeTarget::Track(VideoId::from("v1")),
+                    thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+                }),
+            ],
+            selected: 1,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t4 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t4.draw(|f| render(f, &s_home, &theme, &km, &mut art))
+            .unwrap();
+        let text4: String = t4
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text4.contains("Voyager"),
+            "home item title in preview panel"
+        );
+        assert!(
+            text4.contains("Daft Punk"),
+            "home item subtitle in preview panel"
+        );
+        assert!(
+            text4.contains("track"),
+            "home item kind_label in preview panel"
+        );
+    }
+
+    #[test]
+    fn preview_panel_clamps_inside_list_area_at_end_of_long_list() {
+        let tracks: Vec<Track> = (0..50)
+            .map(|i| Track {
+                thumbnail_url: Some("https://example.com/target.jpg".into()),
+                ..Track::stub(&format!("v{i}"), &format!("Track {i}"))
+            })
+            .collect();
+        let s = AppState {
+            pane: Pane::Songs,
+            focus: Focus::Main,
+            tracks,
+            selected: 49,
+            scroll_offset: 35,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/target.jpg", img);
+
+        let mut t = Terminal::new(TestBackend::new(100, 25)).unwrap();
+        let theme = Theme::default();
+        let km = KeyMap::default();
+        t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+
+        let buf = t.backend().buffer();
+        let panel_x = 100 - PREVIEW_WIDTH;
+        let list_top = list_top_for(false, false, true);
+        let list_rows = list_rows_for(Rect::new(0, 0, 100, 25), false, false, true);
+        let list_bottom = list_top + list_rows as u16;
+
+        let panel_bottom = (list_top..25)
+            .rev()
+            .find(|&y| buf[(panel_x, y)].symbol() == "└")
+            .expect("clamped preview panel bottom border must be drawn");
+
+        assert!(
+            panel_bottom < list_bottom,
+            "panel bottom ({panel_bottom}) must stay strictly within list area (< {list_bottom})"
+        );
+        let panel_top = (list_top..panel_bottom)
+            .find(|&y| buf[(panel_x, y)].symbol() == "┌")
+            .expect("clamped preview panel top border must be drawn");
+        assert!(
+            panel_top >= list_top,
+            "panel top ({panel_top}) must stay within list area (>= {list_top})"
+        );
+    }
+
+    #[test]
+    fn row_with_no_thumbnail_draws_nothing_byte_identical_to_feature_absent() {
+        let s = AppState {
+            pane: Pane::Artists,
+            focus: Focus::Main,
+            artists: vec![Artist {
+                id: ArtistId::from("ar1"),
+                name: "Artist Without Image".into(),
+                subscribers: None,
+                thumbnail_url: None,
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            ..Default::default()
+        };
+        let mut t1 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut t2 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        let mut art_disabled = ArtCache::disabled();
+        t1.draw(|f| render(f, &s, &theme, &km, &mut art_disabled))
+            .unwrap();
+
+        let mut art_enabled = ArtCache::for_test();
+        t2.draw(|f| render(f, &s, &theme, &km, &mut art_enabled))
+            .unwrap();
+
+        assert_eq!(
+            t1.backend().buffer(),
+            t2.backend().buffer(),
+            "A row with no thumbnail must draw nothing and be byte-identical to feature-absent"
+        );
     }
 }
