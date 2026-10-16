@@ -585,8 +585,16 @@ impl AppState {
                 match a {
                     InputAction::Down => self.select_next(),
                     InputAction::Up => self.select_prev(),
-                    InputAction::Home => self.selected = 0,
-                    _ => self.selected = self.list_len().saturating_sub(1),
+                    InputAction::Home => {
+                        self.selected = 0;
+                        self.skip_headings(true);
+                        self.reset_preview_dwell();
+                    }
+                    _ => {
+                        self.selected = self.list_len().saturating_sub(1);
+                        self.skip_headings(false);
+                        self.reset_preview_dwell();
+                    }
                 }
                 self.refresh_visual_marks();
             }
@@ -3097,6 +3105,26 @@ mod tests {
     }
 
     #[test]
+    fn home_key_lands_on_first_selectable_row() {
+        let mut s = home_state();
+        s.selected = 3;
+        s.apply_input(InputAction::Home);
+        // Row 0 is a heading; the cursor must not park there.
+        assert_eq!(s.selected, 1, "home key must land on the first card");
+        assert!(s.selected_home_item().is_some());
+    }
+
+    #[test]
+    fn end_key_lands_on_last_selectable_row() {
+        let mut s = home_state();
+        // Trailing heading so the final row is not selectable.
+        s.home_rows.push(HomeRow::Heading("Trailing".into()));
+        s.apply_input(InputAction::End);
+        assert_eq!(s.selected, 4, "end key must land on the last card");
+        assert!(s.selected_home_item().is_some());
+    }
+
+    #[test]
     fn a_home_track_row_is_playable_but_an_album_row_is_not() {
         // One carousel mixes kinds, so this is per row, not per pane. Enter on
         // the album row must not play whatever track was last in view.
@@ -4124,5 +4152,33 @@ mod tests {
             !s.is_preview_dwelling_elapsed(),
             "dwell must be reset immediately upon cursor move"
         );
+
+        // `g` (Home) also resets the dwell.
+        s.elapsed_ms = 750;
+        s.preview_since_ms = 500; // dwell 250ms -> elapsed
+        assert!(s.is_preview_dwelling_elapsed());
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let action = km.resolve(key, s.focus).expect("resolves Home");
+        s.apply(AppEvent::Input(action));
+        assert_eq!(s.selected, 0);
+        assert_eq!(s.preview_since_ms, 750);
+        assert!(!s.is_preview_dwelling_elapsed());
+
+        // `G` (End) too.
+        s.elapsed_ms = 1000;
+        s.preview_since_ms = 750;
+        assert!(s.is_preview_dwelling_elapsed());
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('G'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let action = km.resolve(key, s.focus).expect("resolves End");
+        s.apply(AppEvent::Input(action));
+        assert_eq!(s.selected, 1);
+        assert_eq!(s.preview_since_ms, 1000);
+        assert!(!s.is_preview_dwelling_elapsed());
     }
 }
