@@ -1400,7 +1400,14 @@ impl AppState {
         self.set_pane(pane);
         // Land in the list, not on the sidebar — the number key already said
         // which source, so stopping at the sidebar would need a second key.
-        self.focus = if pane == Pane::Search {
+        self.focus_list();
+    }
+
+    /// Where a non-guest session lands its focus for the current pane: the
+    /// query field on Search, the list everywhere else. Mirrors `goto_source`
+    /// so startup behaves like pressing the start pane's number key.
+    pub fn focus_list(&mut self) {
+        self.focus = if self.pane == Pane::Search {
             // Otherwise letters would scroll instead of typing a query.
             Focus::SearchInput
         } else {
@@ -2494,6 +2501,44 @@ mod tests {
         };
         s.apply_input(InputAction::Right);
         assert_eq!(s.focus, Focus::Main);
+    }
+
+    #[test]
+    fn startup_focus_rule_lands_non_guest_playlist_in_list() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            guest: false,
+            playlists: vec![Playlist {
+                ..Playlist::stub("p1", "My Playlist")
+            }],
+            selected: 0,
+            ..Default::default()
+        };
+        s.focus_list();
+        assert_eq!(
+            s.focus,
+            Focus::Main,
+            "non-guest start pane lands in the list"
+        );
+        assert!(
+            s.preview_target().is_some(),
+            "panel target available for selected row"
+        );
+    }
+
+    #[test]
+    fn startup_focus_rule_lands_search_in_input() {
+        let mut s = AppState {
+            pane: Pane::Search,
+            guest: false,
+            ..Default::default()
+        };
+        s.focus_list();
+        assert_eq!(
+            s.focus,
+            Focus::SearchInput,
+            "search start pane lands in the query field"
+        );
     }
 
     #[test]

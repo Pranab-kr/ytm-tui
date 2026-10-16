@@ -632,10 +632,15 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
             // guest can do.
             ytm_tui::app::Focus::SearchInput
         } else {
-            ytm_tui::app::Focus::default()
+            // Place-holder; replaced below by `focus_list()` so the start pane
+            // mirrors pressing its number key.
+            ytm_tui::app::Focus::Sidebar
         },
         ..Default::default()
     };
+    if !guest {
+        state.focus_list();
+    }
     // Skipped for a guest: the cache holds the previous session's library, and
     // those rows belong to panes a guest cannot open (FR-G9).
     if let Some(c) = cache.as_ref() {
