@@ -336,10 +336,30 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
     let panel_x = area.x + area.width.saturating_sub(PREVIEW_WIDTH);
     let panel_area = Rect::new(panel_x, panel_y, PREVIEW_WIDTH, PREVIEW_HEIGHT);
 
+    let inner_w = panel_area.width.saturating_sub(2) as usize;
+    let title_str = truncate_to_width(&target.title, inner_w);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.fg_dim));
+        .border_style(Style::default().fg(t.fg_dim))
+        .title(Line::from(Span::styled(
+            title_str,
+            Style::default()
+                .fg(t.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        )));
     let inner = block.inner(panel_area);
+
+    // If a multi-width character on the list row immediately precedes the preview
+    // panel (at panel_area.x - 1), its right half is obscured by the preview panel.
+    // Reset it so ratatui diffs render the panel corner glyph without clipping.
+    if panel_area.x > 0 {
+        let buf = f.buffer_mut();
+        for y in panel_area.top()..panel_area.bottom() {
+            if unicode_width::UnicodeWidthStr::width(buf[(panel_area.x - 1, y)].symbol()) > 1 {
+                buf[(panel_area.x - 1, y)].reset();
+            }
+        }
+    }
 
     f.render_widget(Clear, panel_area);
     f.render_widget(block, panel_area);
@@ -348,21 +368,13 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
         return;
     }
 
-    // Caption first, image last: the caption title sits immediately at the top
-    // of the panel, aligned with the focused row.
+    // Subtitle and detail on the two rows beneath the title, image fills the rest:
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
         .split(inner);
 
-    let inner_w = chunks[0].width as usize;
     let caption_lines = vec![
-        Line::from(Span::styled(
-            truncate_to_width(&target.title, inner_w),
-            Style::default()
-                .fg(t.fg_bright)
-                .add_modifier(Modifier::BOLD),
-        )),
         Line::from(Span::styled(
             truncate_to_width(target.subtitle.as_deref().unwrap_or(""), inner_w),
             Style::default().fg(t.fg_dim),
@@ -440,6 +452,7 @@ fn pane_title(s: &AppState) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::app::{Focus, HomeRow};
     use crate::widgets::art::ArtCache;
@@ -850,9 +863,8 @@ mod tests {
         let expected_y = list_top + 1;
         assert_eq!(buf[(panel_x, expected_y)].symbol(), "┌");
 
-        // Regression test: the caption must sit first inside the panel (immediately below
-        // the top border at the focused row), not pushed down 7+ rows below the image.
-        let expected_caption_y = expected_y + 1;
+        // Regression test: the caption title must be rendered on the SAME buffer row as
+        // the focused row (row_y = expected_y), sharing the top border line.
         let caption_row = (list_top..list_top + PREVIEW_HEIGHT)
             .find(|&y| {
                 let row_str: String = (panel_x..100).map(|x| buf[(x, y)].symbol()).collect();
@@ -860,8 +872,8 @@ mod tests {
             })
             .expect("caption title must be rendered in preview panel");
         assert_eq!(
-            caption_row, expected_caption_y,
-            "caption title must land at top of preview panel (screen row {expected_caption_y}), but was at row {caption_row}"
+            caption_row, expected_y,
+            "caption title must land ON the focused row line (screen row {expected_y}), but was at row {caption_row}"
         );
     }
 
@@ -953,10 +965,65 @@ mod tests {
         t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
 
         let buf = t.backend().buffer();
+        let panel_x = 100 - PREVIEW_WIDTH;
         let list_top = list_top_for(false, false, true);
-        assert_eq!(buf[(99, list_top)].symbol(), "┐");
-        assert_eq!(buf[(99, list_top + PREVIEW_HEIGHT - 1)].symbol(), "┘");
+
+        // Top border corners and title row
+        assert_eq!(
+            buf[(panel_x, list_top)].symbol(),
+            "┌",
+            "top-left corner must be intact"
+        );
+        assert_eq!(
+            buf[(99, list_top)].symbol(),
+            "┐",
+            "top-right corner must be intact"
+        );
+
+        // The top border row contains the title text on the focused row line (list_top)
+        let top_row_str: String = (panel_x..100)
+            .map(|x| buf[(x, list_top)].symbol())
+            .collect();
+        assert!(
+            top_row_str.starts_with('┌'),
+            "top row must start with corner glyph"
+        );
+        assert!(
+            top_row_str.ends_with('┐'),
+            "top row must end with corner glyph"
+        );
+        assert!(
+            top_row_str.contains("日"),
+            "top border row must contain CJK title text on the focused row line"
+        );
+
+        // Subtitle is on the row beneath the title
+        let sub_row_str: String = (panel_x..100)
+            .map(|x| buf[(x, list_top + 1)].symbol())
+            .collect();
+        assert!(
+            sub_row_str.contains("ア"),
+            "subtitle with emoji must be on the row directly beneath the title"
+        );
+
+        // Bottom border corners
+        assert_eq!(
+            buf[(panel_x, list_top + PREVIEW_HEIGHT - 1)].symbol(),
+            "└",
+            "bottom-left corner must be intact"
+        );
+        assert_eq!(
+            buf[(99, list_top + PREVIEW_HEIGHT - 1)].symbol(),
+            "┘",
+            "bottom-right corner must be intact"
+        );
+
         for y in (list_top + 1)..(list_top + PREVIEW_HEIGHT - 1) {
+            assert_eq!(
+                buf[(panel_x, y)].symbol(),
+                "│",
+                "left border preserved without overflow at row {y}"
+            );
             assert_eq!(
                 buf[(99, y)].symbol(),
                 "│",
