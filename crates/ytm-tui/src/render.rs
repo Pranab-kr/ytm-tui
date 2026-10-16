@@ -1229,6 +1229,59 @@ mod tests {
     }
 
     #[test]
+    fn preview_panel_hidden_when_focused_row_is_playing_track() {
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/item.jpg=w240-h240-l90-rj", img);
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        let track = Track {
+            thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+            artists: vec!["Artist".into()],
+            duration: ytm_core::TrackDuration::from_secs(180),
+            ..Track::stub("playing", "Playing Track")
+        };
+
+        // Playing row: panel hidden.
+        let mut s = AppState {
+            pane: Pane::Songs,
+            focus: Focus::Main,
+            tracks: vec![track.clone()],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            now_playing: Some(track.clone()),
+            ..Default::default()
+        };
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+        let buf = t.backend().buffer();
+        let panel_x = 100usize - PREVIEW_WIDTH as usize;
+        let playing_has_box = (0..30usize).any(|y| buf[(panel_x as u16, y as u16)].symbol() == "┌");
+        assert!(
+            !playing_has_box,
+            "panel must be hidden when focused row is the playing track"
+        );
+
+        // Non-playing (now_playing cleared): panel present.
+        s.now_playing = None;
+        let mut t2 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t2.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+        let buf2 = t2.backend().buffer();
+        let not_playing_has_box =
+            (0..30usize).any(|y| buf2[(panel_x as u16, y as u16)].symbol() == "┌");
+        assert!(
+            not_playing_has_box,
+            "panel must show when focused row is not the playing track"
+        );
+    }
+
+    #[test]
     fn preview_panel_clamps_inside_list_area_at_end_of_long_list() {
         let tracks: Vec<Track> = (0..50)
             .map(|i| Track {

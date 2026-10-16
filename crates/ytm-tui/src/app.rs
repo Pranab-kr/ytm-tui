@@ -1712,6 +1712,15 @@ impl AppState {
         if !self.preview_enabled || self.focus != Focus::Main || self.modal.is_some() {
             return None;
         }
+        // The now-playing art already shows this track; drawing the panel for its
+        // own row would put the same cover on screen twice.
+        if let Some(np) = &self.now_playing
+            && self
+                .selected_track()
+                .is_some_and(|t| t.video_id == np.video_id)
+        {
+            return None;
+        }
         match self.pane {
             Pane::Home => {
                 let item = self.selected_home_item()?;
@@ -4223,6 +4232,111 @@ mod tests {
                     .as_deref()
             );
         }
+    }
+
+    #[test]
+    fn preview_target_none_when_focused_row_is_now_playing_in_songs() {
+        let a = Track::stub("A", "A");
+        let b = Track::stub("B", "B");
+        let mut s = AppState {
+            pane: Pane::Songs,
+            focus: Focus::Main,
+            tracks: vec![a.clone(), b.clone()],
+            selected: 0,
+            now_playing: Some(a.clone()),
+            ..Default::default()
+        };
+        assert!(
+            s.preview_target().is_none(),
+            "playing row must hide preview"
+        );
+        s.selected = 1;
+        assert!(
+            s.preview_target().is_some(),
+            "non-playing row must show preview"
+        );
+    }
+
+    #[test]
+    fn preview_target_none_when_focused_row_is_now_playing_in_queue() {
+        let a = Track::stub("A", "A");
+        let b = Track::stub("B", "B");
+        let mut s = AppState {
+            pane: Pane::Queue,
+            focus: Focus::Main,
+            queue: vec![a.clone(), b.clone()],
+            selected: 0,
+            now_playing: Some(a.clone()),
+            ..Default::default()
+        };
+        assert!(
+            s.preview_target().is_none(),
+            "playing row must hide preview"
+        );
+        s.selected = 1;
+        assert!(
+            s.preview_target().is_some(),
+            "non-playing row must show preview"
+        );
+    }
+
+    #[test]
+    fn preview_target_home_now_playing_track_hides_but_card_stays() {
+        let mut s = AppState {
+            pane: Pane::Home,
+            focus: Focus::Main,
+            home_rows: vec![
+                HomeRow::Heading("Quick Picks".into()),
+                HomeRow::Item(HomeItem {
+                    title: "Home Card".into(),
+                    subtitle: "Card Subtitle".into(),
+                    target: HomeTarget::Playlist(PlaylistId::from("pl1")),
+                    thumbnail_url: Some("https://example.com/c.jpg=w120-h120-l90-rj".into()),
+                }),
+                HomeRow::Item(HomeItem {
+                    title: "Home Track Title".into(),
+                    subtitle: "Home Artist Subtitle".into(),
+                    target: HomeTarget::Track(VideoId::from("A")),
+                    thumbnail_url: Some("https://example.com/h.jpg=w120-h120-l90-rj".into()),
+                }),
+            ],
+            selected: 0,
+            now_playing: Some(Track::stub("A", "A")),
+            ..Default::default()
+        };
+        // heading: no target (existing behaviour preserved)
+        assert!(s.preview_target().is_none());
+
+        // card row: keeps its panel even while A is playing
+        s.selected = 1;
+        assert!(s.preview_target().is_some(), "home card must keep preview");
+
+        // track row equal to now_playing: hidden
+        s.selected = 2;
+        assert!(
+            s.preview_target().is_none(),
+            "home track row equal to now_playing must hide preview"
+        );
+    }
+
+    #[test]
+    fn preview_target_playlists_list_unaffected_by_now_playing() {
+        let s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![Playlist {
+                thumbnail_url: Some("https://example.com/p.jpg=w120-h120-l90-rj".into()),
+                track_count: Some(15),
+                ..Playlist::stub("p1", "My Playlist")
+            }],
+            selected: 0,
+            now_playing: Some(Track::stub("A", "A")),
+            ..Default::default()
+        };
+        assert!(
+            s.preview_target().is_some(),
+            "playlist list row must keep preview"
+        );
     }
 
     #[test]
