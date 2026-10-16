@@ -59,6 +59,8 @@ pub enum HomeRow {
 /// Pixels to request for album art. Comfortably over the ~240px a 24-column
 /// panel needs, so the art stays sharp if the panel or the font grows.
 pub const ART_PX: u32 = 600;
+/// Dwell time before fetching or showing the floating thumbnail preview.
+pub const PREVIEW_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
@@ -208,10 +210,45 @@ pub struct AppState {
     pub modal: Option<Modal>,
     pub should_quit: bool,
     pub elapsed_ms: u64,
+    /// When the current row became focused, in elapsed_ms. Dwell starts from here.
+    pub preview_since_ms: u64,
 }
 
 impl AppState {
     pub fn apply(&mut self, ev: AppEvent) {
+        let prev_key = (
+            self.pane,
+            self.focus,
+            self.selected,
+            self.scroll_offset,
+            self.modal.is_some(),
+            self.open_playlist.clone(),
+            self.open_album.clone(),
+            self.open_artist.clone(),
+            self.filter.clone(),
+            self.search_query.clone(),
+            self.preview_target().map(|t| t.video_id),
+        );
+        let is_move = if let AppEvent::Input(ref a) = ev {
+            matches!(
+                a,
+                InputAction::Down
+                    | InputAction::Up
+                    | InputAction::Home
+                    | InputAction::End
+                    | InputAction::PageDown
+                    | InputAction::PageUp
+                    | InputAction::ScrollDown
+                    | InputAction::ScrollUp
+                    | InputAction::CenterOnCursor
+                    | InputAction::FocusCurrent
+                    | InputAction::NextPane
+                    | InputAction::PrevPane
+                    | InputAction::GoTo(_)
+            )
+        } else {
+            false
+        };
         match ev {
             AppEvent::Input(a) => self.apply_input(a),
             AppEvent::Player(p) => self.apply_player(p),
@@ -299,7 +336,10 @@ impl AppState {
             // Art is owned by the loop's `ArtCache`, not by state — protocol
             // objects are not comparable, cloneable, or meaningful to a test
             // backend. State ignores them so `apply` stays a pure reducer.
-            AppEvent::ArtLoaded { .. } | AppEvent::ArtFailed { .. } => {}
+            AppEvent::ArtLoaded { .. }
+            | AppEvent::ArtFailed { .. }
+            | AppEvent::PreviewArtLoaded { .. }
+            | AppEvent::PreviewArtFailed { .. } => {}
 
             // Enqueueing is dispatched to the player and toasted by the event loop.
             AppEvent::EnqueueTracks { .. } => {}
@@ -328,6 +368,22 @@ impl AppState {
                 self.modal = None;
                 self.push_toast(ToastKind::Success, "signed in", self.elapsed_ms);
             }
+        }
+        let curr_key = (
+            self.pane,
+            self.focus,
+            self.selected,
+            self.scroll_offset,
+            self.modal.is_some(),
+            self.open_playlist.clone(),
+            self.open_album.clone(),
+            self.open_artist.clone(),
+            self.filter.clone(),
+            self.search_query.clone(),
+            self.preview_target().map(|t| t.video_id),
+        );
+        if is_move || prev_key != curr_key {
+            self.preview_since_ms = self.elapsed_ms;
         }
     }
 
@@ -1053,6 +1109,7 @@ impl AppState {
         self.selected = 0;
         self.scroll_offset = 0;
         self.clear_marks();
+        self.reset_preview_dwell();
         true
     }
 
@@ -1065,6 +1122,7 @@ impl AppState {
         self.selected = 0;
         self.scroll_offset = 0;
         self.clear_marks();
+        self.reset_preview_dwell();
         true
     }
 
@@ -1189,12 +1247,14 @@ impl AppState {
         if n > 0 {
             self.selected = (self.selected + 1).min(n - 1);
             self.skip_headings(true);
+            self.reset_preview_dwell();
         }
     }
 
     pub fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
         self.skip_headings(false);
+        self.reset_preview_dwell();
     }
 
     /// Leave an open playlist, clearing its rows and stale selection.
@@ -1208,6 +1268,7 @@ impl AppState {
         self.selected = 0;
         self.scroll_offset = 0;
         self.clear_marks();
+        self.reset_preview_dwell();
         true
     }
 
@@ -1282,6 +1343,7 @@ impl AppState {
         self.filter.clear();
         self.scroll_offset = 0;
         self.clear_marks();
+        self.reset_preview_dwell();
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, text: &str, now_ms: u64) {
@@ -1539,6 +1601,26 @@ impl AppState {
     /// True while a range selection is being made — the status line says so.
     pub fn in_visual_mode(&self) -> bool {
         self.visual_anchor.is_some()
+    }
+
+    /// Track targeted for floating thumbnail preview. Allowed only when the
+    /// list owns the cursor (`focus == Focus::Main`), no modal is open, and
+    /// the row is a track on screen.
+    pub fn preview_target(&self) -> Option<Track> {
+        if self.focus != Focus::Main || self.modal.is_some() || self.pane == Pane::Home {
+            return None;
+        }
+        self.selected_track()
+    }
+
+    /// Reset the dwell timer so the preview appears only after cursor rests for `PREVIEW_DELAY_MS`.
+    pub fn reset_preview_dwell(&mut self) {
+        self.preview_since_ms = self.elapsed_ms;
+    }
+
+    /// True once the cursor has rested on the current target for at least `PREVIEW_DELAY_MS`.
+    pub fn is_preview_dwelling_elapsed(&self) -> bool {
+        self.elapsed_ms.saturating_sub(self.preview_since_ms) >= PREVIEW_DELAY_MS
     }
 
     /// Mark or unmark the selected track for a bulk action (FR-C4).
@@ -3641,6 +3723,131 @@ mod tests {
         assert_eq!(
             state.selected, 0,
             "selection must be clamped to remaining playlist"
+        );
+    }
+
+    #[test]
+    fn preview_target_is_none_on_list_panes_unfocused_or_modal_open() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            open_playlist: None,
+            playlists: vec![Playlist::stub("p1", "P1")],
+            focus: Focus::Main,
+            ..Default::default()
+        };
+        assert!(
+            s.preview_target().is_none(),
+            "playlist list has no track target"
+        );
+
+        s.pane = Pane::Albums;
+        s.albums = vec![Album {
+            id: AlbumId::from("a1"),
+            title: "Album".into(),
+            artists: vec![],
+            year: None,
+            thumbnail_url: None,
+        }];
+        assert!(
+            s.preview_target().is_none(),
+            "albums list has no track target"
+        );
+
+        s.pane = Pane::Artists;
+        s.artists = vec![Artist {
+            id: ArtistId::from("ar1"),
+            name: "Artist".into(),
+            subscribers: None,
+            thumbnail_url: None,
+        }];
+        assert!(
+            s.preview_target().is_none(),
+            "artists list has no track target"
+        );
+
+        // Focus not Main:
+        s.pane = Pane::Search;
+        s.search_results = vec![Track::stub("v1", "Track 1")];
+        s.focus = Focus::SearchInput;
+        assert!(
+            s.preview_target().is_none(),
+            "target is none when focus is SearchInput"
+        );
+
+        s.focus = Focus::Sidebar;
+        assert!(
+            s.preview_target().is_none(),
+            "target is none when focus is Sidebar"
+        );
+
+        // Modal open:
+        s.focus = Focus::Main;
+        s.modal = Some(Modal::Help);
+        assert!(
+            s.preview_target().is_none(),
+            "target is none when modal is open"
+        );
+    }
+
+    #[test]
+    fn preview_target_matches_drawn_row_in_search_and_open_playlist() {
+        let mut s = AppState {
+            pane: Pane::Search,
+            focus: Focus::Main,
+            search_results: vec![
+                Track::stub("v1", "Search Track 1"),
+                Track::stub("v2", "Search Track 2"),
+            ],
+            selected: 1,
+            ..Default::default()
+        };
+        assert_eq!(s.preview_target(), s.selected_track());
+        assert_eq!(
+            s.preview_target().as_ref(),
+            s.visible_tracks().get(s.selected).copied()
+        );
+
+        s.pane = Pane::Playlists;
+        s.open_playlist = Some(PlaylistId::from("p1"));
+        s.tracks = vec![
+            Track::stub("pt1", "Playlist Track 1"),
+            Track::stub("pt2", "Playlist Track 2"),
+        ];
+        s.selected = 0;
+        assert_eq!(s.preview_target(), s.selected_track());
+        assert_eq!(
+            s.preview_target().as_ref(),
+            s.visible_tracks().get(s.selected).copied()
+        );
+    }
+
+    #[test]
+    fn moving_cursor_resets_preview_dwell_and_hides_panel() {
+        let km = crate::keymap::KeyMap::default();
+        let mut s = AppState {
+            pane: Pane::Search,
+            focus: Focus::Main,
+            search_results: vec![Track::stub("v1", "Track 1"), Track::stub("v2", "Track 2")],
+            selected: 0,
+            elapsed_ms: 500,
+            preview_since_ms: 100, // dwell = 400ms >= 250ms -> elapsed
+            ..Default::default()
+        };
+        assert!(s.is_preview_dwelling_elapsed());
+
+        // Press 'j' (Down) through KeyMap
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let action = km.resolve(key, s.focus).expect("resolves Down");
+        s.apply(AppEvent::Input(action));
+
+        assert_eq!(s.selected, 1);
+        assert_eq!(s.preview_since_ms, 500);
+        assert!(
+            !s.is_preview_dwelling_elapsed(),
+            "dwell must be reset immediately upon cursor move"
         );
     }
 }

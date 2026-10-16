@@ -34,6 +34,13 @@ pub struct ArtCache {
     order: VecDeque<String>,
     in_flight: HashSet<String>,
     failed: HashSet<String>,
+
+    /// Decoded protocol objects for the focused row preview. Kept strictly
+    /// apart from `images` so preview entries never evict now-playing art.
+    previews: HashMap<String, StatefulProtocol>,
+    preview_order: VecDeque<String>,
+    preview_in_flight: HashSet<String>,
+    preview_failed: HashSet<String>,
 }
 
 impl ArtCache {
@@ -42,12 +49,20 @@ impl ArtCache {
     /// more history than the one visible panel can use.
     pub const MAX_IMAGES: usize = 16;
 
+    /// Previews are downscaled (≤256px) and transient, so 8 entries cost
+    /// kilobytes rather than MiBs.
+    pub const MAX_PREVIEWS: usize = 8;
+
     pub fn len(&self) -> usize {
         self.images.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
+    }
+
+    pub fn preview_len(&self) -> usize {
+        self.previews.len()
     }
 
     /// Enabled without probing the terminal. Halfblocks need no protocol
@@ -94,6 +109,10 @@ impl ArtCache {
             order: VecDeque::new(),
             in_flight: HashSet::new(),
             failed: HashSet::new(),
+            previews: HashMap::new(),
+            preview_order: VecDeque::new(),
+            preview_in_flight: HashSet::new(),
+            preview_failed: HashSet::new(),
         }
     }
 
@@ -103,6 +122,10 @@ impl ArtCache {
 
     pub fn get(&self, url: &str) -> Option<&StatefulProtocol> {
         self.images.get(url)
+    }
+
+    pub fn get_preview(&self, url: &str) -> Option<&StatefulProtocol> {
+        self.previews.get(url)
     }
 
     /// True exactly once per URL, unless it later fails.
@@ -120,6 +143,23 @@ impl ArtCache {
     pub fn mark_failed(&mut self, url: &str) {
         self.in_flight.remove(url);
         self.failed.insert(url.to_owned());
+    }
+
+    /// True exactly once per preview URL, unless it later fails.
+    pub fn should_fetch_preview(&mut self, url: &str) -> bool {
+        if self.previews.contains_key(url)
+            || self.preview_in_flight.contains(url)
+            || self.preview_failed.contains(url)
+        {
+            return false;
+        }
+        self.preview_in_flight.insert(url.to_owned());
+        true
+    }
+
+    pub fn mark_preview_failed(&mut self, url: &str) {
+        self.preview_in_flight.remove(url);
+        self.preview_failed.insert(url.to_owned());
     }
 
     /// Build the protocol object for a decoded image. A disabled cache drops it —
@@ -142,6 +182,34 @@ impl ArtCache {
             }
         }
     }
+
+    /// Build the protocol object for a decoded preview image, downscaling to at
+    /// most 256px so previews take negligible memory. A disabled cache stores
+    /// nothing. Entries here never evict the now-playing image.
+    pub fn insert_preview(&mut self, url: &str, image: image::DynamicImage) {
+        self.preview_in_flight.remove(url);
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let font = picker.font_size();
+        let (max_w, max_h) = if font.width > 0 && font.height > 0 {
+            let pw = (24 * font.width as u32).clamp(64, 256);
+            let ph = (12 * font.height as u32).clamp(64, 256);
+            (pw, ph)
+        } else {
+            (256, 256)
+        };
+        let downscaled = image.thumbnail(max_w, max_h);
+        let proto = picker.new_resize_protocol(downscaled);
+        if self.previews.insert(url.to_owned(), proto).is_none() {
+            self.preview_order.push_back(url.to_owned());
+        }
+        while self.preview_order.len() > Self::MAX_PREVIEWS {
+            if let Some(oldest) = self.preview_order.pop_front() {
+                self.previews.remove(&oldest);
+            }
+        }
+    }
 }
 
 /// Draw the art for whatever is playing, or nothing at all. Takes `&mut ArtCache`
@@ -153,6 +221,18 @@ pub fn draw(f: &mut Frame, area: Rect, url: Option<&str>, art: &mut ArtCache) {
     }
     let Some(url) = url else { return };
     let Some(proto) = art.images.get_mut(url) else {
+        return;
+    };
+    f.render_stateful_widget(StatefulImage::default(), area, proto);
+}
+
+/// Draw the preview thumbnail for the focused row, or nothing at all.
+pub fn draw_preview(f: &mut Frame, area: Rect, url: Option<&str>, art: &mut ArtCache) {
+    if !should_draw(area) || !art.is_enabled() {
+        return;
+    }
+    let Some(url) = url else { return };
+    let Some(proto) = art.previews.get_mut(url) else {
         return;
     };
     f.render_stateful_widget(StatefulImage::default(), area, proto);
@@ -277,5 +357,60 @@ mod tests {
             !c.is_enabled(),
             "an explicitly disabled cache stays disabled"
         );
+    }
+
+    #[test]
+    fn preview_cache_bounds_isolation_and_failure_handling() {
+        // MAX_PREVIEWS bound holds
+        let mut c = ArtCache::for_test();
+        for i in 0..(ArtCache::MAX_PREVIEWS + 5) {
+            c.insert_preview(&format!("p{i}"), tiny(i as u8));
+        }
+        assert_eq!(
+            c.preview_len(),
+            ArtCache::MAX_PREVIEWS,
+            "preview cache must be bounded at MAX_PREVIEWS"
+        );
+
+        // One fetch per URL
+        let mut c2 = ArtCache::disabled();
+        assert!(c2.should_fetch_preview("p1"), "first sighting fetches");
+        assert!(
+            !c2.should_fetch_preview("p1"),
+            "already in flight or cached"
+        );
+
+        // mark_preview_failed is not retried
+        c2.mark_preview_failed("p1");
+        assert!(
+            !c2.should_fetch_preview("p1"),
+            "failed preview URL is not retried"
+        );
+
+        // A disabled cache stores no preview
+        let mut c3 = ArtCache::disabled();
+        c3.insert_preview("p1", tiny(1));
+        assert_eq!(c3.preview_len(), 0);
+        assert!(c3.get_preview("p1").is_none());
+
+        // A preview insert does not evict the now-playing image
+        let mut c4 = ArtCache::for_test();
+        for i in 0..ArtCache::MAX_IMAGES {
+            c4.insert(&format!("np{i}"), tiny(i as u8));
+        }
+        assert_eq!(c4.len(), ArtCache::MAX_IMAGES);
+        c4.insert_preview("preview1", tiny(99));
+        assert_eq!(
+            c4.len(),
+            ArtCache::MAX_IMAGES,
+            "preview insert must not evict now-playing images"
+        );
+        for i in 0..ArtCache::MAX_IMAGES {
+            assert!(
+                c4.get(&format!("np{i}")).is_some(),
+                "now playing image {i} must still be present"
+            );
+        }
+        assert!(c4.get_preview("preview1").is_some());
     }
 }

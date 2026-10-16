@@ -139,6 +139,16 @@ pub enum AppEvent {
         url: String,
     },
 
+    /// Preview thumbnail bytes arrived and decoded for the focused row.
+    PreviewArtLoaded {
+        url: String,
+        image: Box<image::DynamicImage>,
+    },
+    /// Preview thumbnail could not be fetched or decoded.
+    PreviewArtFailed {
+        url: String,
+    },
+
     /// A mutation succeeded server-side; `token` matches the optimistic edit.
     /// `real_id` is the server's id for a create, which replaces the temp one.
     MutationOk {
@@ -146,7 +156,7 @@ pub enum AppEvent {
         real_id: Option<PlaylistId>,
         message: String,
     },
-    /// A mutation failed; roll back the edit tagged with `token`.
+    /// A mutation failed; roll back the edit tagged with `token` technique.
     MutationFailed {
         token: u64,
         message: String,
