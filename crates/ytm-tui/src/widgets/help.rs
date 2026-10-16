@@ -52,7 +52,7 @@ fn action_label(a: &InputAction) -> Option<&'static str> {
         A::ToggleMute => "mute",
         A::ToggleShuffle => "shuffle",
         A::CycleRepeat => "repeat mode",
-        A::OpenSearch => "search online",
+        A::OpenSearch => "search title or lyric",
         A::OpenFilter => "filter this list",
         A::CenterOnCursor => "centre this row",
         A::FocusCurrent => "focus playing song",

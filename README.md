@@ -180,7 +180,13 @@ Press `?` inside the app at any time to see the live keybindings list.
 | Key | Action |
 |---|---|
 | `/` | Filter the current view locally (instant) |
-| `S` | Search YouTube Music online |
+| `S` | Search YouTube Music online — a title, an artist, **or a line of the lyrics** |
+
+`S` sends the query straight to YouTube Music, so typing a lyric line works:
+`beneath the milky twilight` finds *Kiss Me*, `jinke sar ho ishq ki chhaon` finds
+*Chaiyya Chaiyya*, `ami chini go chini tomare` finds the Rabindra Sangeet. The
+matching happens in their backend, not here. The `/` filter by contrast is local:
+it only sees the titles and artists already on screen.
 
 ### Appearance & Settings
 | Key | Action |
