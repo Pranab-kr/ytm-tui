@@ -62,6 +62,8 @@ pub enum InputAction {
     ToggleVisual,
     /// Cycle to the next built-in theme.
     CycleTheme,
+    /// Flip the floating focus-thumbnail preview panel on/off.
+    TogglePreview,
     /// Open config.toml in $EDITOR, reloading keys and theme on exit.
     EditConfig,
     /// Download track(s) for offline listening.

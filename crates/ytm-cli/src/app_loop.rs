@@ -1599,6 +1599,17 @@ pub async fn run(
                                         state.elapsed_ms,
                                     );
                                 }
+                                InputAction::TogglePreview if state.modal.is_none() => {
+                                    state.apply(ytm_tui::event::AppEvent::Input(
+                                        ytm_tui::event::InputAction::TogglePreview,
+                                    ));
+                                    let status = if state.preview_enabled { "on" } else { "off" };
+                                    state.push_toast(
+                                        ToastKind::Info,
+                                        &format!("preview: {status}"),
+                                        state.elapsed_ms,
+                                    );
+                                }
                                 InputAction::EditConfig if state.modal.is_none() => {
                                     match edit_config_in_editor(terminal, &config_path) {
                                         Ok(Some(reloaded)) => {

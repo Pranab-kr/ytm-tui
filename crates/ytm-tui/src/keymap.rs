@@ -66,6 +66,7 @@ impl KeyMap {
             ('v', InputAction::ToggleMark),
             ('V', InputAction::ToggleVisual),
             ('t', InputAction::CycleTheme),
+            ('P', InputAction::TogglePreview),
             (',', InputAction::EditConfig),
             ('e', InputAction::PlayNext),
             ('J', InputAction::MoveEntryDown),
@@ -259,6 +260,7 @@ const ACTION_NAMES: &[&str] = &[
     "toggle_mark",
     "toggle_visual",
     "cycle_theme",
+    "toggle_preview",
     "edit_config",
     "add_to_queue",
     "play_next",
@@ -302,6 +304,7 @@ fn action_from_name(n: &str) -> Option<InputAction> {
         "toggle_mark" => InputAction::ToggleMark,
         "toggle_visual" => InputAction::ToggleVisual,
         "cycle_theme" => InputAction::CycleTheme,
+        "toggle_preview" => InputAction::TogglePreview,
         "edit_config" => InputAction::EditConfig,
         "add_to_queue" => InputAction::AddToQueue,
         "play_next" => InputAction::PlayNext,
@@ -764,6 +767,29 @@ mod tests {
         assert_eq!(
             km.resolve(key('d'), Focus::Main),
             Some(InputAction::Download)
+        );
+    }
+
+    #[test]
+    fn capital_p_resolves_to_toggle_preview() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(key('P'), Focus::Main),
+            Some(InputAction::TogglePreview)
+        );
+    }
+
+    #[test]
+    fn toggle_preview_is_config_bindable() {
+        let m = KeyMap::from_toml_str(r#"toggle_preview = "z""#).unwrap();
+        assert_eq!(
+            m.resolve(key('z'), Focus::Main),
+            Some(InputAction::TogglePreview)
+        );
+        assert_eq!(
+            m.resolve(key('P'), Focus::Main),
+            None,
+            "a remap is exclusive, so the default must be gone"
         );
     }
 }

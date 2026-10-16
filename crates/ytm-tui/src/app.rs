@@ -149,7 +149,6 @@ pub enum PromptAction {
     RenamePlaylist(PlaylistId),
 }
 
-#[derive(Default)]
 pub struct AppState {
     pub pane: Pane,
     pub focus: Focus,
@@ -228,6 +227,59 @@ pub struct AppState {
     pub elapsed_ms: u64,
     /// When the current row became focused, in elapsed_ms. Dwell starts from here.
     pub preview_since_ms: u64,
+    /// Runtime switch for the floating focus-thumbnail preview panel. Session-only.
+    pub preview_enabled: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            pane: Default::default(),
+            focus: Default::default(),
+            selected: Default::default(),
+            sidebar_selected: Default::default(),
+            scroll_offset: Default::default(),
+            viewport_rows: Default::default(),
+            playlists: Default::default(),
+            tracks: Default::default(),
+            downloaded_tracks: Default::default(),
+            albums: Default::default(),
+            artists: Default::default(),
+            open_playlist: Default::default(),
+            home_rows: Default::default(),
+            open_artist: Default::default(),
+            artist_tracks: Default::default(),
+            open_album: Default::default(),
+            album_tracks: Default::default(),
+            filter: Default::default(),
+            artist_search_active: Default::default(),
+            search_query: Default::default(),
+            search_cursor: Default::default(),
+            search_results: Default::default(),
+            marked: Default::default(),
+            visual_anchor: Default::default(),
+            marks_before_visual: Default::default(),
+            now_playing: Default::default(),
+            playback: Default::default(),
+            position: Default::default(),
+            duration: Default::default(),
+            volume: Default::default(),
+            muted: Default::default(),
+            shuffle: Default::default(),
+            repeat: Default::default(),
+            queue: Default::default(),
+            queue_current: Default::default(),
+            pending: Default::default(),
+            loading: Default::default(),
+            guest: Default::default(),
+            toasts: Default::default(),
+            modal: Default::default(),
+            should_quit: Default::default(),
+            elapsed_ms: Default::default(),
+            preview_since_ms: Default::default(),
+            preview_enabled: true,
+        }
+    }
 }
 
 impl AppState {
@@ -621,6 +673,10 @@ impl AppState {
             }
             // `zz`, from vim: centre the selected row.
             InputAction::CenterOnCursor => self.center_on_cursor(),
+            InputAction::TogglePreview => {
+                self.preview_enabled = !self.preview_enabled;
+                self.reset_preview_dwell();
+            }
             InputAction::FocusCurrent => self.focus_current(),
             // Tab / Shift+Tab cycle sources. These resolved in the keymap from
             // the very first version but no reducer ever handled them, so both
@@ -1646,7 +1702,7 @@ impl AppState {
     /// list owns the cursor (`focus == Focus::Main`), no modal is open, and
     /// the row is currently focused on screen.
     pub fn preview_target(&self) -> Option<PreviewTarget> {
-        if self.focus != Focus::Main || self.modal.is_some() {
+        if !self.preview_enabled || self.focus != Focus::Main || self.modal.is_some() {
             return None;
         }
         match self.pane {
@@ -4180,5 +4236,39 @@ mod tests {
         assert_eq!(s.selected, 1);
         assert_eq!(s.preview_since_ms, 1000);
         assert!(!s.is_preview_dwelling_elapsed());
+    }
+
+    #[test]
+    fn toggle_preview_key_flips_preview_enabled_and_target() {
+        use crate::keymap::KeyMap;
+        let km = KeyMap::default();
+        let mut s = AppState {
+            pane: Pane::Search,
+            focus: Focus::Main,
+            search_results: vec![Track::stub("v1", "Track 1")],
+            selected: 0,
+            preview_enabled: true,
+            ..Default::default()
+        };
+        assert!(s.preview_target().is_some());
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('P'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let action = km.resolve(key, s.focus).expect("resolves TogglePreview");
+        assert_eq!(action, InputAction::TogglePreview);
+        s.apply(AppEvent::Input(action));
+        assert!(!s.preview_enabled);
+        assert!(s.preview_target().is_none());
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('P'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let action = km.resolve(key, s.focus).expect("resolves TogglePreview");
+        s.apply(AppEvent::Input(action));
+        assert!(s.preview_enabled);
+        assert!(s.preview_target().is_some());
     }
 }

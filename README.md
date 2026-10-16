@@ -192,6 +192,7 @@ it only sees the titles and artists already on screen.
 | Key | Action |
 |---|---|
 | `t` | Cycle color themes |
+| `P` | Toggle focus preview panel |
 | `,` | Open configuration file |
 | `?` | Show help overlay |
 

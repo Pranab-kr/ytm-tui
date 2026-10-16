@@ -1183,6 +1183,52 @@ mod tests {
     }
 
     #[test]
+    fn preview_panel_hidden_when_preview_disabled() {
+        let mut art = ArtCache::for_test();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([10, 10, 10]),
+        ));
+        art.insert_preview("https://example.com/item.jpg=w240-h240-l90-rj", img);
+        let theme = Theme::default();
+        let km = KeyMap::default();
+
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![Playlist {
+                thumbnail_url: Some("https://example.com/item.jpg=w120-h120-l90-rj".into()),
+                track_count: Some(42),
+                ..Playlist::stub("p1", "Electro Hits")
+            }],
+            selected: 0,
+            elapsed_ms: 300,
+            preview_since_ms: 0,
+            preview_enabled: false,
+            ..Default::default()
+        };
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+        let buf = t.backend().buffer();
+        let panel_x = 100usize - PREVIEW_WIDTH as usize;
+        let disabled_has_box =
+            (0..30usize).any(|y| buf[(panel_x as u16, y as u16)].symbol() == "┌");
+        assert!(
+            !disabled_has_box,
+            "disabled preview must not draw a panel box"
+        );
+
+        s.preview_enabled = true;
+        let mut t2 = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t2.draw(|f| render(f, &s, &theme, &km, &mut art)).unwrap();
+        let buf2 = t2.backend().buffer();
+        let enabled_has_box =
+            (0..30usize).any(|y| buf2[(panel_x as u16, y as u16)].symbol() == "┌");
+        assert!(enabled_has_box, "enabled preview must draw a panel box");
+    }
+
+    #[test]
     fn preview_panel_clamps_inside_list_area_at_end_of_long_list() {
         let tracks: Vec<Track> = (0..50)
             .map(|i| Track {
