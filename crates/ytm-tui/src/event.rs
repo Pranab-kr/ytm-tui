@@ -156,7 +156,7 @@ pub enum AppEvent {
         real_id: Option<PlaylistId>,
         message: String,
     },
-    /// A mutation failed; roll back the edit tagged with `token` technique.
+    /// A mutation failed; roll back the edit tagged with `token`.
     MutationFailed {
         token: u64,
         message: String,
