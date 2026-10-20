@@ -663,8 +663,26 @@ impl AppState {
             PlayerEvent::ShuffleChanged(s) => self.shuffle = s,
             PlayerEvent::RepeatChanged(r) => self.repeat = r,
             PlayerEvent::QueueChanged { tracks, current } => {
+                // The actor emits this before `TrackChanged`, so the old queue
+                // and `queue_current` are still here. Follow playback only when
+                // the cursor was parked on the playing entry: a cursor the user
+                // moved elsewhere, another pane, or a focused sidebar must not
+                // be stolen.
+                let follows = self.pane == Pane::Queue
+                    && self.focus == Focus::Main
+                    && self.queue_current.is_some()
+                    && self.queue_index_of_selected() == self.queue_current;
                 self.queue = tracks;
                 self.queue_current = current;
+                if follows {
+                    // `None` means the queue ran out; there is no new row to
+                    // follow, so keep the cursor and let the clamp tidy bounds.
+                    if let Some(current) = current
+                        && let Some(row) = self.queue_row_of_index(current)
+                    {
+                        self.selected = row;
+                    }
+                }
                 if self.pane == Pane::Queue {
                     self.clamp_selection();
                 }
@@ -867,6 +885,26 @@ impl AppState {
     /// Queue index of the row under the cursor.
     pub fn queue_index_of_selected(&self) -> Option<usize> {
         self.queue_index_of_row(self.selected)
+    }
+
+    /// Visible row for a real queue index — the inverse of
+    /// [`Self::queue_index_of_row`]. Matching occurrences are counted in queue
+    /// order, so a duplicated id resolves to the row holding *that* occurrence
+    /// rather than the first copy of the same track.
+    fn queue_row_of_index(&self, index: usize) -> Option<usize> {
+        if self.pane != Pane::Queue {
+            return None;
+        }
+        let track = self.queue.get(index)?;
+        if !self.is_filtering() {
+            return Some(index);
+        }
+        self.track_matches_filter(track).then(|| {
+            self.queue[..index]
+                .iter()
+                .filter(|t| self.track_matches_filter(t))
+                .count()
+        })
     }
 
     /// The row `selected` would have if the filter were cleared.
@@ -1158,9 +1196,12 @@ impl AppState {
         if self.pane != Pane::Albums || self.open_album.is_none() {
             return false;
         }
-        self.open_album = None;
+        let opened = self.open_album.take().map(|(id, _)| id);
         self.album_tracks.clear();
-        self.selected = 0;
+        self.selected = opened
+            .as_ref()
+            .and_then(|id| self.visible_albums().iter().position(|a| &a.id == id))
+            .unwrap_or(0);
         self.scroll_offset = 0;
         self.clear_marks();
         true
@@ -1170,9 +1211,12 @@ impl AppState {
         if self.pane != Pane::Artists || self.open_artist.is_none() {
             return false;
         }
-        self.open_artist = None;
+        let opened = self.open_artist.take().map(|(id, _)| id);
         self.artist_tracks.clear();
-        self.selected = 0;
+        self.selected = opened
+            .as_ref()
+            .and_then(|id| self.visible_artists().iter().position(|a| &a.id == id))
+            .unwrap_or(0);
         self.scroll_offset = 0;
         self.clear_marks();
         true
@@ -1313,9 +1357,16 @@ impl AppState {
         if self.pane != Pane::Playlists || self.open_playlist.is_none() {
             return false;
         }
-        self.open_playlist = None;
+        let opened = self.open_playlist.take();
         self.tracks.clear();
-        self.selected = 0;
+        // Going back one level should land on the row that was opened. The id
+        // lookup runs against the *visible* list so an active filter maps it to
+        // the row actually on screen; a playlist that is no longer there falls
+        // back to the top rather than leaving a dangling index.
+        self.selected = opened
+            .as_ref()
+            .and_then(|id| self.visible_playlists().iter().position(|p| &p.id == id))
+            .unwrap_or(0);
         self.scroll_offset = 0;
         self.clear_marks();
         true
@@ -2348,9 +2399,94 @@ mod tests {
         );
         assert_eq!(
             s.selected, 0,
-            "selection returns to the top of the playlist list"
+            "selection returns to the opened playlist's row"
         );
         assert_eq!(s.focus, Focus::Main, "closing keeps focus on the list");
+    }
+
+    #[test]
+    fn closing_a_playlist_returns_the_cursor_to_the_opened_row() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![
+                Playlist::stub("p0", "Alpha"),
+                Playlist::stub("p1", "Focus"),
+                Playlist::stub("p2", "Beta"),
+            ],
+            selected: 1,
+            scroll_offset: 4,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::PlaylistTracksLoaded {
+            id: PlaylistId::from("p1"),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+        assert_eq!(s.open_playlist, Some(PlaylistId::from("p1")));
+        assert_eq!(s.selected, 0, "opening starts on the first track");
+
+        assert!(s.close_open_playlist());
+
+        assert_eq!(s.selected, 1, "the cursor returns to the opened playlist");
+        assert_eq!(
+            s.selected_playlist().map(|p| p.id),
+            Some(PlaylistId::from("p1"))
+        );
+        assert_eq!(s.scroll_offset, 0, "the renderer reveals the selected row");
+    }
+
+    #[test]
+    fn closing_a_playlist_maps_its_id_through_the_active_filter() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![
+                Playlist::stub("p0", "Alpha"),
+                Playlist::stub("p1", "Honey"),
+                Playlist::stub("p2", "Focus"),
+            ],
+            filter: "o".into(),
+            selected: 1,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::PlaylistTracksLoaded {
+            id: PlaylistId::from("p2"),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+
+        assert!(s.close_open_playlist());
+
+        assert_eq!(
+            s.selected, 1,
+            "Honey is visible row 0, so Focus is visible row 1"
+        );
+        assert_eq!(
+            s.selected_playlist().map(|p| p.id),
+            Some(PlaylistId::from("p2"))
+        );
+    }
+
+    #[test]
+    fn closing_a_playlist_that_left_the_list_falls_back_to_the_top() {
+        let mut s = AppState {
+            pane: Pane::Playlists,
+            focus: Focus::Main,
+            playlists: vec![Playlist::stub("p0", "Alpha"), Playlist::stub("p1", "Beta")],
+            selected: 1,
+            scroll_offset: 3,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::PlaylistTracksLoaded {
+            id: PlaylistId::from("gone"),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+
+        assert!(s.close_open_playlist());
+
+        assert_eq!(s.selected, 0, "a stale id must not leave a dangling row");
     }
 
     #[test]
@@ -3482,6 +3618,69 @@ mod tests {
     }
 
     #[test]
+    fn closing_an_album_returns_the_cursor_to_the_opened_row() {
+        let album = |id: &str, title: &str| Album {
+            id: AlbumId::from(id),
+            title: title.into(),
+            artists: vec!["Someone".into()],
+            year: None,
+            thumbnail_url: None,
+        };
+        let mut s = AppState {
+            pane: Pane::Albums,
+            focus: Focus::Main,
+            albums: vec![
+                album("a0", "Alpha"),
+                album("a1", "Geogaddi"),
+                album("a2", "Beta"),
+            ],
+            selected: 1,
+            scroll_offset: 4,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::AlbumTracksLoaded {
+            id: AlbumId::from("a1"),
+            name: "Geogaddi".into(),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+        assert_eq!(s.selected, 0, "opening starts on the first track");
+
+        assert!(s.close_open_album());
+
+        assert_eq!(s.selected, 1, "the cursor returns to the opened album");
+        assert_eq!(s.selected_album().map(|a| a.id), Some(AlbumId::from("a1")));
+        assert_eq!(s.scroll_offset, 0, "the renderer reveals the selected row");
+    }
+
+    #[test]
+    fn closing_an_album_that_left_the_list_falls_back_to_the_top() {
+        let albums = vec![Album {
+            id: AlbumId::from("a0"),
+            title: "Alpha".into(),
+            artists: Vec::new(),
+            year: None,
+            thumbnail_url: None,
+        }];
+        let mut s = AppState {
+            pane: Pane::Albums,
+            focus: Focus::Main,
+            albums,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::AlbumTracksLoaded {
+            id: AlbumId::from("gone"),
+            name: "Gone".into(),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+
+        assert!(s.close_open_album());
+
+        assert_eq!(s.selected, 0);
+    }
+
+    #[test]
     fn an_open_artist_shows_their_tracks_and_h_leaves_again() {
         let mut s = AppState {
             pane: Pane::Artists,
@@ -3511,6 +3710,69 @@ mod tests {
             s.selected_track().is_none(),
             "closing must clear the tracks, not leave them behind"
         );
+    }
+
+    #[test]
+    fn closing_an_artist_returns_the_cursor_to_the_opened_row() {
+        let artist = |id: &str, name: &str| Artist {
+            id: ArtistId::from(id),
+            name: name.into(),
+            subscribers: None,
+            thumbnail_url: None,
+        };
+        let mut s = AppState {
+            pane: Pane::Artists,
+            focus: Focus::Main,
+            artists: vec![
+                artist("ar0", "Alpha"),
+                artist("ar1", "Aphex Twin"),
+                artist("ar2", "Beta"),
+            ],
+            selected: 1,
+            scroll_offset: 4,
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::ArtistTracksLoaded {
+            id: ArtistId::from("ar1"),
+            name: "Aphex Twin".into(),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+        assert_eq!(s.selected, 0, "opening starts on the first track");
+
+        assert!(s.close_open_artist());
+
+        assert_eq!(s.selected, 1, "the cursor returns to the opened artist");
+        assert_eq!(
+            s.selected_artist().map(|a| a.id),
+            Some(ArtistId::from("ar1"))
+        );
+        assert_eq!(s.scroll_offset, 0, "the renderer reveals the selected row");
+    }
+
+    #[test]
+    fn closing_an_artist_that_left_the_list_falls_back_to_the_top() {
+        let mut s = AppState {
+            pane: Pane::Artists,
+            focus: Focus::Main,
+            artists: vec![Artist {
+                id: ArtistId::from("ar0"),
+                name: "Alpha".into(),
+                subscribers: None,
+                thumbnail_url: None,
+            }],
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::ArtistTracksLoaded {
+            id: ArtistId::from("gone"),
+            name: "Gone".into(),
+            tracks: vec![Track::stub("v1", "A")],
+        });
+
+        assert!(s.close_open_artist());
+
+        assert_eq!(s.selected, 0);
     }
 
     #[test]
@@ -3753,6 +4015,129 @@ mod tests {
                 .iter()
                 .any(|t| t.text.contains("Downloaded \"Downloaded Song\""))
         );
+    }
+
+    /// A four-row queue with `current` playing and the cursor on `selected`.
+    fn queue_with_current(current: usize, selected: usize) -> AppState {
+        AppState {
+            pane: Pane::Queue,
+            focus: Focus::Main,
+            queue: vec![
+                Track::stub("q0", "First"),
+                Track::stub("q1", "Second"),
+                Track::stub("q2", "Third"),
+                Track::stub("q3", "Fourth"),
+            ],
+            queue_current: Some(current),
+            selected,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn auto_advance_follows_playback_when_the_cursor_is_on_the_current_row() {
+        let mut s = queue_with_current(0, 0);
+        let tracks = s.queue.clone();
+
+        // The actor emits QueueChanged before TrackChanged when a song ends.
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: Some(1),
+        }));
+        s.apply(AppEvent::Player(PlayerEvent::TrackChanged(Some(
+            Track::stub("q1", "Second"),
+        ))));
+
+        assert_eq!(s.selected, 1, "the highlight follows the new track");
+        assert_eq!(s.queue_index_of_selected(), Some(1));
+    }
+
+    #[test]
+    fn a_manual_next_moves_the_cursor_onto_the_new_current_row() {
+        let mut s = queue_with_current(1, 1);
+        let tracks = s.queue.clone();
+
+        // Next re-emits the queue with the same tracks and a new current.
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: Some(2),
+        }));
+
+        assert_eq!(s.selected, 2, "the highlight follows the next track");
+        assert_eq!(s.queue_index_of_selected(), Some(2));
+    }
+
+    #[test]
+    fn a_user_moved_cursor_is_not_stolen_when_playback_advances() {
+        let mut s = queue_with_current(0, 2);
+        let tracks = s.queue.clone();
+
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: Some(1),
+        }));
+
+        assert_eq!(s.selected, 2, "the cursor stays where the user put it");
+        assert_eq!(s.queue_index_of_selected(), Some(2));
+    }
+
+    #[test]
+    fn a_filtered_queue_follows_the_exact_duplicate_occurrence() {
+        let tracks = vec![
+            Track::stub("dup", "blue"),
+            Track::stub("x", "nothing"),
+            Track::stub("dup", "blue"),
+        ];
+        let mut s = AppState {
+            pane: Pane::Queue,
+            focus: Focus::Main,
+            queue: tracks.clone(),
+            queue_current: Some(0),
+            selected: 0,
+            filter: "blu".into(),
+            ..Default::default()
+        };
+
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: Some(2),
+        }));
+
+        assert_eq!(
+            s.selected, 1,
+            "visible row 1 is the second occurrence, not the first copy"
+        );
+        assert_eq!(s.queue_index_of_selected(), Some(2));
+    }
+
+    #[test]
+    fn queue_follow_does_not_steal_the_cursor_from_the_sidebar() {
+        let mut s = AppState {
+            focus: Focus::Sidebar,
+            ..queue_with_current(0, 0)
+        };
+        let tracks = s.queue.clone();
+
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: Some(1),
+        }));
+
+        assert_eq!(s.selected, 0, "the user is not browsing the queue list");
+    }
+
+    #[test]
+    fn a_queue_that_runs_out_leaves_the_cursor_where_it_was() {
+        let mut s = queue_with_current(0, 0);
+        let tracks = s.queue.clone();
+
+        s.apply(AppEvent::Player(PlayerEvent::QueueChanged {
+            tracks,
+            current: None,
+        }));
+
+        assert_eq!(s.queue_current, None);
+        assert_eq!(s.selected, 0, "no new current, so no row to follow");
     }
 
     #[test]
