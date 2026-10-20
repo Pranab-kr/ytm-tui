@@ -1,5 +1,6 @@
 //! The event loop. Owns AppState; nothing here may block on I/O (NFR-2).
 
+use crate::art_disk::DiskArtCache;
 use crate::mpris;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::Stdout;
@@ -1436,6 +1437,7 @@ pub async fn run(
     cache_reader: Option<ytm_core::cache::Cache>,
     cache_writer: Option<std::sync::mpsc::Sender<CacheWork>>,
     mut art: ytm_tui::widgets::art::ArtCache,
+    disk_art: DiskArtCache,
     mut media: Option<souvlaki::MediaControls>,
     // `config_path` is where `,` opens an editor and what a reload re-reads;
     // `theme_name` tracks where `t` is in the preset cycle.
@@ -1829,11 +1831,11 @@ pub async fn run(
                 if art.is_enabled()
                     && let Some(url) = art_tick(&mut art, &state)
                 {
-                    spawn_art_fetch(url, app_tx.clone());
+                    spawn_art_fetch(url, app_tx.clone(), disk_art.clone());
                 }
                 if art.is_enabled() {
                     for url in row_art_tick(&mut art, &state) {
-                        spawn_row_art_fetch(url, app_tx.clone());
+                        spawn_row_art_fetch(url, app_tx.clone(), disk_art.clone());
                     }
                 }
             }
@@ -2131,9 +2133,9 @@ fn row_art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState) -> 
 ///
 /// Every failure path posts `RowArtFailed`, which is what stops the URL being
 /// retried on every tick. Covers are optional (FR-U5), so failures stay at debug.
-fn spawn_row_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
+fn spawn_row_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>, disk: DiskArtCache) {
     tokio::spawn(async move {
-        let ev = match fetch_art(&url).await {
+        let ev = match fetch_art(&url, &disk).await {
             Ok(image) => AppEvent::RowArtLoaded {
                 url: url.clone(),
                 image: Box::new(image),
@@ -2150,9 +2152,9 @@ fn spawn_row_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
 /// Fetch and decode one thumbnail off the UI thread (NFR-2). Decoding is CPU work,
 /// so it goes to `spawn_blocking`. Every failure path posts `ArtFailed`, which is
 /// what stops the URL being retried on every tick; a silent drop retries forever.
-fn spawn_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
+fn spawn_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>, disk: DiskArtCache) {
     tokio::spawn(async move {
-        let ev = match fetch_art(&url).await {
+        let ev = match fetch_art(&url, &disk).await {
             Ok(image) => AppEvent::ArtLoaded {
                 url: url.clone(),
                 image: Box::new(image),
@@ -2168,17 +2170,69 @@ fn spawn_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-async fn fetch_art(
-    url: &str,
+/// Decode an image off the async workers. The disk path and the network path
+/// share this, so a cached file and a fresh download cannot disagree about what
+/// counts as a usable cover.
+async fn decode_art(
+    bytes: Vec<u8>,
 ) -> Result<image::DynamicImage, Box<dyn std::error::Error + Send + Sync>> {
-    let bytes = reqwest::get(url).await?.error_for_status()?.bytes().await?;
-    // Decode is CPU-bound; keep it off the async workers.
-    let image = tokio::task::spawn_blocking(move || {
+    Ok(tokio::task::spawn_blocking(move || {
         image::ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()?
             .decode()
     })
-    .await??;
+    .await??)
+}
+
+/// One cover: disk first, network second.
+///
+/// A disk hit avoids the download entirely. Bytes that do not decode are
+/// removed (a truncated write deserves a refetch) and the network path runs. A
+/// download is decoded before it is cached, so only real images are stored, and
+/// a failed cache write is a debug log — never a reason to lose the image the
+/// user just waited for.
+async fn fetch_art(
+    url: &str,
+    disk: &DiskArtCache,
+) -> Result<image::DynamicImage, Box<dyn std::error::Error + Send + Sync>> {
+    let getter = disk.clone();
+    let key = url.to_owned();
+    let hit = tokio::task::spawn_blocking(move || getter.get(&key))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::debug!(url = %url, error = %e, "cover cache lookup failed");
+            None
+        });
+
+    if let Some(bytes) = hit {
+        match decode_art(bytes).await {
+            Ok(image) => return Ok(image),
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "cached cover did not decode; refetching");
+                let cache = disk.clone();
+                let key = url.to_owned();
+                let _ = tokio::task::spawn_blocking(move || cache.remove(&key)).await;
+            }
+        }
+    }
+
+    let bytes = reqwest::get(url)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?
+        .to_vec();
+    let raw = bytes.clone();
+    let image = decode_art(bytes).await?;
+
+    let cache = disk.clone();
+    let key = url.to_owned();
+    match tokio::task::spawn_blocking(move || cache.put(&key, &raw)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::debug!(url = %url, error = %e, "could not cache cover on disk"),
+        Err(e) => tracing::debug!(url = %url, error = %e, "cover cache write task failed"),
+    }
+
     Ok(image)
 }
 

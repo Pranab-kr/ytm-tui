@@ -1,4 +1,5 @@
 mod app_loop;
+mod art_disk;
 mod config;
 mod logging;
 mod mpris;
@@ -516,10 +517,21 @@ fn run_config(path_override: Option<&std::path::Path>, no_edit: bool) -> color_e
 }
 
 fn run_cache_clear() -> color_eyre::Result<()> {
-    let path = config::paths::cache_dir().join("cache.db");
+    let dir = config::paths::cache_dir();
+    let path = dir.join("cache.db");
+    let art_dir = dir.join("art");
     let cache = ytm_core::cache::Cache::open(&path)?;
     cache.clear()?;
-    println!("Cache cleared ({}).", path.display());
+    // Cover images are cache too: `cache clear` that left them behind made the
+    // command's promise false, even though logs and audio are deliberately safe.
+    if art_dir.is_dir() {
+        std::fs::remove_dir_all(&art_dir)?;
+    }
+    println!(
+        "Cache cleared ({} and {}).",
+        path.display(),
+        art_dir.display()
+    );
     Ok(())
 }
 
@@ -724,6 +736,10 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
         None
     };
     let auto_reload_theme = cfg.ui.auto_reload_theme;
+    // Persistent cover storage. Cheap to construct: the directory is created on
+    // the first write and indexed lazily on the first read, so a launch with
+    // album art disabled pays nothing.
+    let disk_art = art_disk::DiskArtCache::new(config::paths::cache_dir().join("art"));
     let result = app_loop::run(
         &mut guard.terminal,
         state,
@@ -740,6 +756,7 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
         cache_reader,
         cache_writer,
         art,
+        disk_art,
         media,
         media_keys,
         cfg.config_path.clone(),

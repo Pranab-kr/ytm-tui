@@ -11,6 +11,7 @@ Browse your Home feed, playlists, liked songs (Fav), albums and artists, search 
 - Vim and arrow navigation: `j`/`k` or arrows, `g`/`G`, Ctrl+d/u, visual range selection (`V`), and `1`–`8` to switch tabs.
 - Full queue control: reorder, play next, append with `a`, and clear.
 - Album art in graphics-capable terminals (Kitty, Sixel, iTerm2) plus six themes: tokyonight, gruvbox, nord, dracula, dawn, paper.
+- Cover art is cached on disk (up to 1 GiB, least-recently-used eviction), so repeat visits and later launches render previously fetched art without downloading it again.
 - Media keys and MPRIS desktop integration.
 - Guest mode with no account, or sign in with cookies to reach your personal library.
 
@@ -176,6 +177,7 @@ the `/` filter is local and only sees titles and artists already on screen.
 - Press `d` on a track (or a highlighted visual selection) to download it.
 - Switch to tab **8 (Downloads)** to see all downloaded songs.
 - When you play a downloaded song, `ytm-tui` plays the local file, with zero network latency, even if you start it from a remote playlist or search.
+- `ytm-tui cache clear` clears the metadata database and the cover-art cache. Downloaded music and the audio cache are left alone.
 
 ## Configuration
 
