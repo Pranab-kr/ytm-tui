@@ -3987,6 +3987,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fetch_art_serves_a_disk_hit_before_the_network() {
+        // Port 9 is the discard port; nothing listens there. If the disk lookup
+        // misses, this test fails on the connection instead of silently passing.
+        let url = "http://127.0.0.1:9/never-served.png";
+        let dir = std::env::temp_dir().join(format!(
+            "ytm-tui-fetch-art-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = DiskArtCache::new(dir.clone());
+
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            3,
+            image::Rgba([10, 20, 30, 255]),
+        ));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode the test cover");
+        cache.put(url, &bytes).expect("seed the disk cache");
+
+        let fetched = fetch_art(url, &cache).await.expect("disk hit");
+        assert_eq!((fetched.width(), fetched.height()), (2, 3));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn row_art_tick_does_not_repeat_in_flight_urls() {
         let mut art = ytm_tui::widgets::art::ArtCache::disabled();
