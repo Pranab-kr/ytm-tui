@@ -239,7 +239,7 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::
         .split(area);
     let (search_row, filter_row, list_row) = (rows[1], rows[2], rows[3]);
 
-    let (heading, badge) = heading_parts(s, w);
+    let (heading, badge, offline) = heading_parts(s, w);
     let mut spans = vec![Span::styled(
         heading,
         Style::default()
@@ -251,6 +251,11 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::
             b,
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ));
+    }
+    if let Some(o) = offline {
+        // Quiet and persistent, unlike the visual badge: the state is real but
+        // nothing about it needs the user's attention.
+        spans.push(Span::styled(o, Style::default().fg(t.fg_dim)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
     // Top-right of the heading row: tied to the pane whose data is loading.
@@ -295,20 +300,23 @@ fn draw_search(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art
     }
 }
 
-/// The heading row: the pane name, plus a visual-mode badge when one fits. Visual
-/// mode is otherwise invisible — its marks look exactly like the ones `v` makes.
-/// Two pieces so the badge styles apart; dropped, not truncated, when narrow.
-fn heading_parts(s: &AppState, w: usize) -> (String, Option<String>) {
+/// The heading row: the pane name, plus a visual-mode badge and an offline
+/// marker when they fit. Visual mode is otherwise invisible — its marks look
+/// exactly like the ones `v` makes; offline outlives its startup toast and
+/// would otherwise read as panes that are simply empty. Three pieces so each
+/// styles apart; badges are dropped, not truncated, when narrow.
+fn heading_parts(s: &AppState, w: usize) -> (String, Option<String>, Option<String>) {
     let title = pane_title(s);
-    if !s.in_visual_mode() {
-        return (truncate_to_width(&title, w), None);
-    }
-    let badge = format!("  VISUAL {}", s.marked.len());
-    if display_width(&title) + display_width(&badge) <= w {
-        (title, Some(badge))
+    let visual = if s.in_visual_mode() {
+        let badge = format!("  VISUAL {}", s.marked.len());
+        (display_width(&title) + display_width(&badge) <= w).then_some(badge)
     } else {
-        (truncate_to_width(&title, w), None)
-    }
+        None
+    };
+    let used = display_width(&title) + visual.as_deref().map_or(0, display_width);
+    let offline =
+        (s.offline && used + display_width("  offline") <= w).then(|| "  offline".to_owned());
+    (truncate_to_width(&title, w), visual, offline)
 }
 
 fn pane_title(s: &AppState) -> String {
@@ -493,6 +501,32 @@ mod tests {
 
         let enough = Rect::new(0, 0, MAIN_MIN_WIDTH + ART_WIDTH + ART_GAP, 20);
         assert!(split_for_art(enough, true, true).1.is_some());
+    }
+
+    #[test]
+    fn offline_mode_is_named_in_the_heading() {
+        // The startup error toast expires; without a persistent marker an
+        // offline session looks like an app whose panes are simply empty.
+        let offline = AppState {
+            pane: Pane::Songs,
+            offline: true,
+            ..Default::default()
+        };
+        let text = frame_text(&offline, &mut ArtCache::disabled(), 80, 24);
+        assert!(
+            text.contains("offline"),
+            "the heading must name the mode, got: {text}"
+        );
+
+        let online = AppState {
+            pane: Pane::Songs,
+            ..Default::default()
+        };
+        let text = frame_text(&online, &mut ArtCache::disabled(), 80, 24);
+        assert!(
+            !text.contains("offline"),
+            "a connected session must not claim to be offline, got: {text}"
+        );
     }
 
     #[test]

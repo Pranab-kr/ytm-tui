@@ -157,11 +157,18 @@ pub fn editor_command() -> Option<String> {
 pub const GUEST_NOTICE: &str =
     "guest mode — search and queue are available; set auth.cookie_file for your library";
 
+/// What an offline session is told at startup. Deliberately not an error: the
+/// cached library and downloads still play, and a transport dump is not
+/// actionable (NFR-9).
+pub const OFFLINE_NOTICE: &str = "offline mode — cached music and downloads only";
+
 /// Settle the UI against what the source can actually do. The handshake is the
 /// only moment an *expired* cookie shows: YouTube answers one with HTTP 200, so
 /// `run_tui` had already opened a library pane that would stay forever empty.
 fn source_ready(state: &mut AppState, authenticated: bool) {
     state.guest = !authenticated;
+    // A source exists, so whatever the last attempt said, there is a connection.
+    state.offline = false;
     if !state.guest || !state.pane.requires_auth() {
         return;
     }
@@ -177,6 +184,48 @@ fn source_ready(state: &mut AppState, authenticated: bool) {
     state.sidebar_selected = 5;
     state.focus = Focus::SearchInput;
     state.push_toast(ToastKind::Info, GUEST_NOTICE, state.elapsed_ms);
+}
+
+/// Report a failed handshake. A transport failure is not a sign-in problem, so
+/// it becomes persistent offline mode plus a notice; anything else keeps the
+/// error, because a missing or rejected cookie really is actionable.
+fn source_failed(state: &mut AppState, error: &color_eyre::Report) {
+    state.loading = false;
+    if is_network_error(error) {
+        state.offline = true;
+        state.push_toast(ToastKind::Info, OFFLINE_NOTICE, state.elapsed_ms);
+        tracing::warn!(error = %error, "no connection; continuing offline");
+    } else {
+        state.push_toast(
+            ToastKind::Error,
+            &format!("could not sign in: {error}"),
+            state.elapsed_ms,
+        );
+        tracing::error!(error = %error, "source unavailable");
+    }
+}
+
+/// Whether any link in the error chain is a transport failure. The `Report`
+/// wraps the `SourceError` in whatever context was added on the way up, so the
+/// check walks the chain instead of downcasting the top.
+fn is_network_error(error: &color_eyre::Report) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<ytm_core::SourceError>()
+            .is_some_and(|e| matches!(e, ytm_core::SourceError::Network(_)))
+    })
+}
+
+/// The source is not built yet. Normally that is a handshake still in flight;
+/// in an offline session it will never arrive, and "still connecting…" would be
+/// a lie the user waits on.
+fn pending_source_notice(state: &mut AppState) {
+    let message = if state.offline {
+        OFFLINE_NOTICE
+    } else {
+        "still connecting…"
+    };
+    state.push_toast(ToastKind::Info, message, state.elapsed_ms);
 }
 
 /// Start background work, declining with a toast if the source is not built yet
@@ -313,7 +362,7 @@ fn try_spawn(
         }
         let Some(src) = source.clone() else {
             state.loading = false;
-            state.push_toast(ToastKind::Info, "still connecting…", state.elapsed_ms);
+            pending_source_notice(state);
             return;
         };
         let tx = tx.clone();
@@ -364,7 +413,7 @@ fn try_spawn(
         let id = id.clone();
         let Some(src) = source.clone() else {
             state.loading = false;
-            state.push_toast(ToastKind::Info, "still connecting…", state.elapsed_ms);
+            pending_source_notice(state);
             return;
         };
         let tx = tx.clone();
@@ -404,7 +453,7 @@ fn try_spawn(
     }
     match source {
         Some(src) => spawn_task(task, src.clone(), tx.clone()),
-        None => state.push_toast(ToastKind::Info, "still connecting…", state.elapsed_ms),
+        None => pending_source_notice(state),
     }
 }
 
@@ -1781,15 +1830,9 @@ pub async fn run(
                     }
                     Err(e) => {
                         // Not fatal any more: the TUI is already up and usable for
-                        // anything cached, so an auth failure is a message rather
-                        // than an exit that dumps a report over a live screen.
-                        state.loading = false;
-                        state.push_toast(
-                            ToastKind::Error,
-                            &format!("could not sign in: {e}"),
-                            state.elapsed_ms,
-                        );
-                        tracing::error!(error = %e, "source unavailable");
+                        // anything cached. A network failure switches to offline
+                        // mode; only a real sign-in problem is an error toast.
+                        source_failed(&mut state, &e);
                     }
                 }
             }
@@ -2430,6 +2473,73 @@ mod tests {
     }
 
     #[test]
+    fn a_network_failure_reports_offline_mode_not_a_sign_in_error() {
+        // The owner hit this with no connection: the toast read "could not sign
+        // in: network problem: ...". That names the wrong problem — the app is
+        // offline, and cached music still works.
+        let mut s = AppState::default();
+        let failure = color_eyre::Report::from(ytm_core::SourceError::Network(
+            "error sending request".into(),
+        ))
+        .wrap_err("could not use the cookie file");
+        source_failed(&mut s, &failure);
+
+        assert!(s.offline, "a network failure is an offline session");
+        assert!(!s.loading, "the spinner must stop");
+        let toast = s.toasts.last().expect("the user is told something");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert!(
+            toast.text.contains("offline"),
+            "expected offline wording, got {:?}",
+            toast.text
+        );
+        assert!(
+            !toast.text.contains("network problem"),
+            "the raw transport error must not reach the toast: {:?}",
+            toast.text
+        );
+    }
+
+    #[test]
+    fn a_non_network_failure_keeps_the_sign_in_error() {
+        let mut s = AppState::default();
+        let failure = color_eyre::eyre::eyre!("auth.cookie_file is not set");
+        source_failed(&mut s, &failure);
+
+        assert!(!s.offline, "a config problem is not offline mode");
+        let toast = s.toasts.last().expect("the user is told something");
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert!(toast.text.contains("could not sign in"));
+    }
+
+    #[test]
+    fn a_missing_source_in_offline_mode_says_offline_not_still_connecting() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut s = AppState {
+            offline: true,
+            ..Default::default()
+        };
+        let no_source: Option<Arc<dyn MusicSource>> = None;
+        try_spawn(
+            Task::LoadSongs,
+            &no_source,
+            &tx,
+            &mut s,
+            None,
+            None,
+            None,
+            None,
+        );
+        let toast = s.toasts.last().expect("the user is told something");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert!(
+            toast.text.contains("offline"),
+            "offline must not look like a slow handshake: {:?}",
+            toast.text
+        );
+    }
+
+    #[test]
     fn unauthenticated_source_ready_redirects_locked_pane_to_search() {
         let mut state = AppState {
             pane: Pane::Playlists,
@@ -2453,10 +2563,13 @@ mod tests {
         let mut state = AppState {
             pane: Pane::Playlists,
             sidebar_selected: 1,
+            // A later successful handshake must clear a previous offline mark.
+            offline: true,
             ..Default::default()
         };
         source_ready(&mut state, true);
         assert!(!state.guest);
+        assert!(!state.offline, "a live source means the session is online");
         assert_eq!(state.pane, Pane::Playlists);
     }
 

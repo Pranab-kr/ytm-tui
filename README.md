@@ -105,6 +105,14 @@ Export your YouTube Music session cookies once to reach your playlists, liked so
    ```
    If it lists your playlists, you are ready. Run `ytm-tui` to start listening.
 
+### 3. Offline mode
+
+With no connection the app still opens: cached playlists and rows render, covers
+come from the disk cache, and downloaded songs play. The pane heading reads
+`offline` and a notice explains that only cache and downloads are available,
+instead of a sign-in error. Searches, uncached playlists and library refreshes
+need a connection; start the app again once you are back online.
+
 ## Keybindings
 
 Press `?` inside the app for the live keybindings list. Full table:

@@ -205,6 +205,10 @@ pub struct AppState {
     pub pending: MutationLog,
     pub loading: bool,
     pub guest: bool,
+    /// True when the source handshake failed for want of a connection. The UI
+    /// still works from cache and downloads; network actions are refused with
+    /// an offline notice instead of a raw transport error.
+    pub offline: bool,
     pub toasts: Vec<Toast>,
     pub modal: Option<Modal>,
     pub should_quit: bool,
