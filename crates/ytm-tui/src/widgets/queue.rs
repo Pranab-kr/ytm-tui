@@ -1,28 +1,15 @@
-//! The play queue: one row per entry, with the current one marked.
-//!
-//! Columns match `tracklist` so switching panes does not shift the grid. The
-//! left column carries two meanings here: the play position (FR-Q1) and the
-//! multi-select bullet (FR-C4), with the bullet winning when a row is marked.
+//! The play queue as two-line rows. The left gutter carries two meanings: the
+//! multi-select bullet and the play position, with the bullet winning when a
+//! row is marked. The shared layout lives in [`crate::widgets::row`].
 
 use crate::{
-    app::AppState, theme::Theme, util::text::pad_to_width, widgets::tracklist::visible_window,
+    app::AppState,
+    theme::Theme,
+    widgets::{art, row},
 };
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
-};
+use ratatui::{Frame, layout::Rect};
 
-/// Right-hand duration column, wide enough for `1:02:03`.
-const DURATION_WIDTH: usize = 7;
-/// The current-entry marker plus its trailing space.
-const MARK_WIDTH: usize = 2;
-/// Title takes six tenths of what is left; the artist gets the rest.
-const TITLE_SHARE: usize = 6;
-
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::ArtCache) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -31,102 +18,49 @@ pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     // drawing the raw queue made `/` look broken here and put the cursor on a
     // different row than `x` or Enter acted on.
     let rows = s.visible_tracks();
+    row::draw_list(f, area, s, t, art, rows.len(), |idx| {
+        let Some(track) = rows.get(idx) else {
+            return row::Row::default();
+        };
+        let is_sel = idx == s.selected;
+        // Unfiltered, the visible index *is* the queue index, and it is the
+        // only way to tell two copies of one song apart. Under a filter the
+        // indices differ, so match on id and accept both rows highlighting.
+        let is_current = if s.is_filtering() {
+            s.queue_current
+                .and_then(|c| s.queue.get(c))
+                .is_some_and(|c| c.video_id == track.video_id)
+        } else {
+            s.queue_current == Some(idx)
+        };
+        let marked = s.marked.contains(&track.video_id);
 
-    if rows.is_empty() {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                s.empty_message(),
-                Style::default().fg(t.fg_dim),
-            )),
-            area,
-        );
-        return;
-    }
+        // The gutter shows one glyph and the mark wins it, so a `V` range reads
+        // as a contiguous run of bullets. Play position survives in the accent
+        // title, and the play glyph returns when the mark clears.
+        let marker = if marked {
+            "\u{2022} ".to_owned()
+        } else if is_current {
+            "\u{25b6} ".to_owned()
+        } else {
+            String::new()
+        };
+        let subtitle = match track.album.as_deref().filter(|a| !a.is_empty()) {
+            Some(album) => format!("{} \u{2022} {album}", track.artist_display()),
+            None => track.artist_display(),
+        };
 
-    let h = area.height as usize;
-    let (start, end) = visible_window(s.selected, s.scroll_offset, h, rows.len());
-    let w = area.width as usize;
-
-    let text_w = w.saturating_sub(DURATION_WIDTH + MARK_WIDTH);
-    let title_w = (text_w * TITLE_SHARE) / 10;
-    let artist_w = text_w.saturating_sub(title_w);
-
-    let slice = rows.get(start..end).unwrap_or(&rows[..0]);
-    let items: Vec<ListItem> = slice
-        .iter()
-        .enumerate()
-        .map(|(i, track)| {
-            let idx = start + i;
-            let is_sel = idx == s.selected;
-            // Unfiltered, the visible index *is* the queue index, and it is the
-            // only way to tell two copies of one song apart. Under a filter the
-            // indices differ, so match on id and accept both rows highlighting.
-            let is_current = if s.is_filtering() {
-                s.queue_current
-                    .and_then(|c| s.queue.get(c))
-                    .is_some_and(|c| c.video_id == track.video_id)
-            } else {
-                s.queue_current == Some(idx)
-            };
-
-            let marked = s.marked.contains(&track.video_id);
-
-            let base = if is_current {
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.fg)
-            };
-            // Selection and marked rows receive a reversed background tint (spec §6, FR-FIX2).
-            let style = if is_sel || marked {
-                base.bg(t.bg_sel)
-            } else {
-                base
-            };
-            let dim = if is_sel || marked {
-                style
-            } else {
-                Style::default().fg(t.fg_dim)
-            };
-
-            // The gutter shows one glyph and the mark wins it, so a `V` range
-            // reads as a contiguous run of bullets. Play position survives in the
-            // bold accent title, and the `\u{25b6}` returns when the mark clears.
-            let gutter = if marked {
-                "\u{2022} "
-            } else if is_current {
-                "\u{25b6} "
-            } else {
-                "  "
-            };
-
-            let gutter_style = if is_sel || marked {
-                Style::default().fg(t.accent).bg(t.bg_sel)
-            } else {
-                Style::default().fg(t.accent)
-            };
-
-            ListItem::new(Line::from(vec![
-                Span::styled(gutter, gutter_style),
-                Span::styled(pad_to_width(&track.title, title_w), style),
-                Span::styled(pad_to_width(&track.artist_display(), artist_w), dim),
-                Span::styled(
-                    format!(
-                        "{:>width$}",
-                        track.duration.to_string(),
-                        width = DURATION_WIDTH
-                    ),
-                    dim,
-                ),
-            ]))
-            .style(if is_sel || marked {
-                Style::default().bg(t.bg_sel)
-            } else {
-                Style::default()
-            })
-        })
-        .collect();
-
-    f.render_widget(List::new(items), area);
+        row::Row {
+            title: track.title.clone(),
+            subtitle,
+            right: track.duration.to_string(),
+            thumbnail: track.thumbnail_url.clone(),
+            marker,
+            accent: is_current,
+            marked: is_sel || marked,
+            heading: false,
+        }
+    });
 }
 
 #[cfg(test)]
@@ -177,6 +111,36 @@ mod tests {
             text.find("First") < text.find("Second"),
             "order must be preserved"
         );
+    }
+
+    #[test]
+    fn queue_rows_start_with_a_cover_gutter() {
+        assert!(
+            text_of(&two_entries()).contains('\u{266a}'),
+            "every queue row needs the cover gutter"
+        );
+    }
+
+    #[test]
+    fn queue_rows_put_artist_album_and_duration_on_the_second_line() {
+        use ytm_core::TrackDuration;
+        let s = AppState {
+            pane: Pane::Queue,
+            queue: vec![Track {
+                title: "Roygbiv".into(),
+                artists: vec!["Boards of Canada".into()],
+                album: Some("Geogaddi".into()),
+                duration: TrackDuration::from_secs(149),
+                ..Track::stub("v1", "Roygbiv")
+            }],
+            ..Default::default()
+        };
+        let text = text_of(&s);
+        assert!(
+            text.contains("Boards of Canada \u{2022} Geogaddi"),
+            "artist and album share the second line, got: {text}"
+        );
+        assert!(text.contains("2:29"));
     }
 
     #[test]
@@ -246,7 +210,15 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| super::draw(f, f.area(), &state, &theme))
+            .draw(|f| {
+                super::draw(
+                    f,
+                    f.area(),
+                    &state,
+                    &theme,
+                    &mut crate::widgets::art::ArtCache::disabled(),
+                )
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -254,6 +226,11 @@ mod tests {
         assert!(rendered.contains('•'));
         let cell = buffer.cell((0, 0)).unwrap();
         assert_eq!(cell.bg, theme.bg_sel);
+        assert_eq!(
+            buffer.cell((0, 1)).unwrap().bg,
+            theme.bg_sel,
+            "the marked background covers the row's second line too"
+        );
     }
 
     #[test]
@@ -272,7 +249,15 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| super::draw(f, f.area(), &state, &theme))
+            .draw(|f| {
+                super::draw(
+                    f,
+                    f.area(),
+                    &state,
+                    &theme,
+                    &mut crate::widgets::art::ArtCache::disabled(),
+                )
+            })
             .unwrap();
     }
 }

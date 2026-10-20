@@ -2,6 +2,7 @@
 
 use crate::event::{AppEvent, InputAction};
 use crate::mutation::{Mutation, MutationLog};
+use crate::widgets::{row, tracklist};
 use std::collections::HashSet;
 
 /// Rows one wheel notch moves. Three is the common terminal default.
@@ -401,13 +402,16 @@ impl AppState {
                 }
             }
 
-            // Art is owned by the loop's `ArtCache`, not by state — protocol
-            // objects are not comparable, cloneable, or meaningful to a test
-            // backend. State ignores them so `apply` stays a pure reducer.
+            // Art (now-playing, preview, and row covers) is owned by the loop's
+            // `ArtCache`, not by state — protocol objects are not comparable,
+            // cloneable, or meaningful to a test backend. State ignores them so
+            // `apply` stays a pure reducer.
             AppEvent::ArtLoaded { .. }
             | AppEvent::ArtFailed { .. }
             | AppEvent::PreviewArtLoaded { .. }
-            | AppEvent::PreviewArtFailed { .. } => {}
+            | AppEvent::PreviewArtFailed { .. }
+            | AppEvent::RowArtLoaded { .. }
+            | AppEvent::RowArtFailed { .. } => {}
 
             // Enqueueing is dispatched to the player and toasted by the event loop.
             AppEvent::EnqueueTracks { .. } => {}
@@ -827,6 +831,106 @@ impl AppState {
         }
     }
 
+    /// Covers for exactly the rows in the current scroll window, already sized
+    /// through [`row::thumbnail_key`] so a fetch matches what the renderer draws.
+    ///
+    /// The event loop calls this each tick and spawns the misses; it must stay a
+    /// cheap read of state. Blank URLs are dropped rather than requested, and
+    /// duplicates are removed in row order so a repeated cover costs one fetch.
+    pub fn visible_row_thumbnails(&self) -> Vec<String> {
+        // Nothing is on screen, so nothing is worth fetching. Navigation floors
+        // the height at 1 before the first frame; the fetch path must not.
+        if self.viewport_rows == 0 {
+            return Vec::new();
+        }
+        let len = self.list_len();
+        if len == 0 {
+            return Vec::new();
+        }
+        let (start, end) =
+            tracklist::visible_window(self.selected, self.scroll_offset, self.viewport_rows, len);
+        if start >= end {
+            return Vec::new();
+        }
+
+        // `get` rather than indexing: a pane whose filtered length differs from
+        // `list_len` must fetch nothing rather than panic the UI thread.
+        let urls: Vec<&str> = match self.pane {
+            Pane::Home => self
+                .home_rows
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|row| match row {
+                    HomeRow::Item(item) => item.thumbnail_url.as_deref(),
+                    HomeRow::Heading(_) => None,
+                })
+                .collect(),
+            Pane::Playlists if self.open_playlist.is_some() => self
+                .visible_tracks()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| t.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Playlists => self
+                .visible_playlists()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|p| p.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Albums if self.open_album.is_some() => self
+                .visible_tracks()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| t.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Albums => self
+                .visible_albums()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|a| a.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Artists if self.open_artist.is_some() => self
+                .visible_tracks()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| t.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Artists => self
+                .visible_artists()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|a| a.thumbnail_url.as_deref())
+                .collect(),
+            Pane::Songs | Pane::Search | Pane::Queue | Pane::Downloads => self
+                .visible_tracks()
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| t.thumbnail_url.as_deref())
+                .collect(),
+        };
+
+        let mut seen = HashSet::new();
+        let mut covers = Vec::new();
+        for url in urls {
+            if url.trim().is_empty() {
+                continue;
+            }
+            let key = row::thumbnail_key(url);
+            if seen.insert(key.clone()) {
+                covers.push(key);
+            }
+        }
+        covers
+    }
+
     /// True when a filter is narrowing the rows on screen.
     pub fn is_filtering(&self) -> bool {
         !self.filter.is_empty()
@@ -979,20 +1083,18 @@ impl AppState {
     }
 
     /// Whether the track header is drawn; shared by layout and click geometry.
+    ///
+    /// The two-line row replaced the separate `Title / Artist / Time` header,
+    /// so there is no header row any more and this is always `false`. The API
+    /// stays because the event loop still passes it through the layout and
+    /// click math; removing it would touch call sites owned by the row work.
     pub fn column_header_visible(&self) -> bool {
-        let track_shaped = match self.pane {
-            Pane::Songs | Pane::Queue | Pane::Search | Pane::Downloads => true,
-            Pane::Playlists => self.open_playlist.is_some(),
-            Pane::Albums => self.open_album.is_some(),
-            Pane::Artists => self.open_artist.is_some(),
-            Pane::Home => false,
-        };
-        // `list_len() > 0` walked and counted the whole filtered list; `any` stops
-        // at the first surviving row. Called twice per frame.
-        track_shaped && self.has_any_row()
+        false
     }
 
     /// Whether the current pane has at least one visible row. Stops at the first.
+    /// Test-only now that the column header it fed is gone.
+    #[cfg(test)]
     fn has_any_row(&self) -> bool {
         match self.pane {
             Pane::Home => !self.home_rows.is_empty(),
@@ -1007,6 +1109,7 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
     fn any_track_visible(&self) -> bool {
         let source = self.unfiltered_tracks();
         if self.filter.is_empty() {
@@ -4429,5 +4532,428 @@ mod tests {
         s.apply(AppEvent::Input(action));
         assert!(s.preview_enabled);
         assert!(s.preview_target().is_some());
+    }
+
+    #[test]
+    fn visible_row_thumbnails_follow_the_scroll_window() {
+        // The loop must fetch only what the renderer can draw this frame, not a
+        // whole library. `selected` below the viewport moves the window down.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: (0..6)
+                .map(|i| Track {
+                    thumbnail_url: Some(format!("https://example.com/{i}.jpg")),
+                    ..Track::stub(&format!("v{i}"), &format!("Track {i}"))
+                })
+                .collect(),
+            selected: 3,
+            scroll_offset: 0,
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/2.jpg", "https://example.com/3.jpg",],
+            "only the two rows in view may be fetched"
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_skip_home_headings() {
+        let item = |title: &str, url: &str| {
+            HomeRow::Item(HomeItem {
+                title: title.into(),
+                subtitle: String::new(),
+                target: HomeTarget::Track(VideoId::from(title)),
+                thumbnail_url: Some(url.into()),
+            })
+        };
+        let s = AppState {
+            pane: Pane::Home,
+            home_rows: vec![
+                HomeRow::Heading("Quick picks".into()),
+                item("one", "https://example.com/1.jpg"),
+                HomeRow::Heading("Listen again".into()),
+                item("two", "https://example.com/2.jpg"),
+            ],
+            viewport_rows: 4,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/1.jpg", "https://example.com/2.jpg",],
+            "headings consume rows but have no cover"
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_playlist_rows() {
+        let s = AppState {
+            pane: Pane::Playlists,
+            playlists: vec![
+                Playlist {
+                    thumbnail_url: Some("https://example.com/p1.jpg".into()),
+                    ..Playlist::stub("p1", "One")
+                },
+                Playlist::stub("p2", "No cover"),
+                Playlist {
+                    thumbnail_url: Some("https://example.com/p3.jpg".into()),
+                    ..Playlist::stub("p3", "Three")
+                },
+            ],
+            viewport_rows: 3,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/p1.jpg", "https://example.com/p3.jpg",]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_album_rows() {
+        let album = |id: &str, url: Option<&str>| Album {
+            id: AlbumId::from(id),
+            title: id.into(),
+            artists: Vec::new(),
+            year: None,
+            thumbnail_url: url.map(str::to_owned),
+        };
+        let s = AppState {
+            pane: Pane::Albums,
+            albums: vec![
+                album("a1", Some("https://example.com/a1.jpg")),
+                album("a2", None),
+            ],
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/a1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_artist_rows() {
+        let artist = |id: &str, url: Option<&str>| ytm_core::Artist {
+            id: ytm_core::ArtistId::from(id),
+            name: id.into(),
+            subscribers: None,
+            thumbnail_url: url.map(str::to_owned),
+        };
+        let s = AppState {
+            pane: Pane::Artists,
+            artists: vec![
+                artist("ar1", None),
+                artist("ar2", Some("https://example.com/ar2.jpg")),
+            ],
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/ar2.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_an_open_playlist() {
+        // An open playlist draws its tracks, not the playlist list, so the
+        // covers must come from the same source the renderer slices.
+        let s = AppState {
+            pane: Pane::Playlists,
+            open_playlist: Some(PlaylistId::from("p1")),
+            tracks: vec![
+                Track {
+                    thumbnail_url: Some("https://example.com/t1.jpg".into()),
+                    ..Track::stub("v1", "One")
+                },
+                Track::stub("v2", "No cover"),
+            ],
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/t1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_deduplicate_in_row_order() {
+        // Home shelves and queues repeat tracks. Fetching the same cover twice
+        // would burn the per-tick budget and the cache's in-flight guard.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![
+                Track {
+                    thumbnail_url: Some("https://example.com/a.jpg".into()),
+                    ..Track::stub("v1", "One")
+                },
+                Track {
+                    thumbnail_url: Some("https://example.com/b.jpg".into()),
+                    ..Track::stub("v2", "Two")
+                },
+                Track {
+                    thumbnail_url: Some("https://example.com/a.jpg".into()),
+                    ..Track::stub("v3", "Three")
+                },
+            ],
+            viewport_rows: 3,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/a.jpg", "https://example.com/b.jpg",],
+            "the first occurrence keeps its place and repeats are dropped"
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_skip_empty_urls() {
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![
+                Track {
+                    thumbnail_url: Some(String::new()),
+                    ..Track::stub("v1", "Empty")
+                },
+                Track {
+                    thumbnail_url: Some("   ".into()),
+                    ..Track::stub("v2", "Whitespace")
+                },
+                Track::stub("v3", "None"),
+                Track {
+                    thumbnail_url: Some("https://example.com/ok.jpg".into()),
+                    ..Track::stub("v4", "Real")
+                },
+            ],
+            viewport_rows: 4,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/ok.jpg"],
+            "a blank URL would request the CDN root and fail forever"
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_use_the_row_cache_key() {
+        // Fetch and draw must ask for the same size or every lookup misses.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/a.jpg=w120-h120-l90-rj".into()),
+                ..Track::stub("v1", "One")
+            }],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/a.jpg=w96-h96-l90-rj"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_are_empty_with_no_viewport() {
+        // Before the first frame `viewport_rows` is zero. Navigation floors it
+        // at one so keys still work; fetching must not, because no row is on
+        // screen and the first tick would request a cover nobody can see.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/a.jpg".into()),
+                ..Track::stub("v1", "One")
+            }],
+            viewport_rows: 0,
+            ..Default::default()
+        };
+
+        assert!(s.visible_row_thumbnails().is_empty());
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_an_open_album() {
+        let s = AppState {
+            pane: Pane::Albums,
+            open_album: Some((AlbumId::from("a1"), "Geogaddi".into())),
+            album_tracks: vec![
+                Track {
+                    thumbnail_url: Some("https://example.com/at1.jpg".into()),
+                    ..Track::stub("v1", "One")
+                },
+                Track::stub("v2", "No cover"),
+            ],
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/at1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_an_open_artist() {
+        let s = AppState {
+            pane: Pane::Artists,
+            open_artist: Some((ytm_core::ArtistId::from("ar1"), "Aphex Twin".into())),
+            artist_tracks: vec![
+                Track::stub("v1", "No cover"),
+                Track {
+                    thumbnail_url: Some("https://example.com/rt1.jpg".into()),
+                    ..Track::stub("v2", "Two")
+                },
+            ],
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/rt1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_search_results() {
+        let s = AppState {
+            pane: Pane::Search,
+            search_results: vec![Track {
+                thumbnail_url: Some("https://example.com/s1.jpg".into()),
+                ..Track::stub("v1", "Found")
+            }],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/s1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_the_queue() {
+        let s = AppState {
+            pane: Pane::Queue,
+            queue: vec![Track {
+                thumbnail_url: Some("https://example.com/q1.jpg".into()),
+                ..Track::stub("v1", "Queued")
+            }],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/q1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_come_from_downloads() {
+        let s = AppState {
+            pane: Pane::Downloads,
+            downloaded_tracks: vec![Track {
+                thumbnail_url: Some("https://example.com/d1.jpg".into()),
+                ..Track::stub("v1", "Downloaded")
+            }],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/d1.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_skip_headings_at_the_top_of_a_scrolled_home() {
+        let item = |title: &str, url: &str| {
+            HomeRow::Item(HomeItem {
+                title: title.into(),
+                subtitle: String::new(),
+                target: HomeTarget::Track(VideoId::from(title)),
+                thumbnail_url: Some(url.into()),
+            })
+        };
+        let s = AppState {
+            pane: Pane::Home,
+            home_rows: vec![
+                HomeRow::Heading("Quick picks".into()),
+                item("one", "https://example.com/1.jpg"),
+                HomeRow::Heading("Listen again".into()),
+                item("two", "https://example.com/2.jpg"),
+                HomeRow::Heading("More".into()),
+                item("three", "https://example.com/3.jpg"),
+            ],
+            selected: 3,
+            // The window starts on the "Listen again" heading.
+            scroll_offset: 2,
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/2.jpg"],
+            "a heading at the top of the window must not shift the item's cover"
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_clamp_an_out_of_range_selection() {
+        // Selection can outlive the list it indexed (a load replaces rows).
+        // The fetch window must clamp like the renderer rather than index past
+        // the end or request nothing at all.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: (0..4)
+                .map(|i| Track {
+                    thumbnail_url: Some(format!("https://example.com/{i}.jpg")),
+                    ..Track::stub(&format!("v{i}"), &format!("Track {i}"))
+                })
+                .collect(),
+            selected: 999,
+            scroll_offset: 999,
+            viewport_rows: 2,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            s.visible_row_thumbnails(),
+            vec!["https://example.com/3.jpg"]
+        );
+    }
+
+    #[test]
+    fn visible_row_thumbnails_do_not_panic_when_rows_are_shorter_than_list_len() {
+        // Search's `list_len` is the unfiltered result count, while the widget
+        // draws the filtered `visible_tracks`. A stale filter used to make the
+        // slice index past the shorter vector and panic the UI thread.
+        let s = AppState {
+            pane: Pane::Search,
+            search_results: vec![Track::stub("v1", "One"), Track::stub("v2", "Two")],
+            filter: "no such row".into(),
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert!(s.visible_row_thumbnails().is_empty());
     }
 }

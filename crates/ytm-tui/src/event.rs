@@ -151,6 +151,18 @@ pub enum AppEvent {
         url: String,
     },
 
+    /// A two-line list row's cover arrived and decoded. Row covers are optional
+    /// (FR-U5): a missing or late one leaves the dim `♪` placeholder in place.
+    RowArtLoaded {
+        url: String,
+        image: Box<image::DynamicImage>,
+    },
+    /// A row cover could not be fetched or decoded. Never surfaced to the user;
+    /// it only stops the event loop retrying a dead URL every tick.
+    RowArtFailed {
+        url: String,
+    },
+
     /// A mutation succeeded server-side; `token` matches the optimistic edit.
     /// `real_id` is the server's id for a create, which replaces the temp one.
     MutationOk {

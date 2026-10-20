@@ -41,6 +41,14 @@ pub struct ArtCache {
     preview_order: VecDeque<String>,
     preview_in_flight: HashSet<String>,
     preview_failed: HashSet<String>,
+
+    /// Covers for the two-line list rows. A fourth cache for the same reason as
+    /// previews: a screenful of covers must never evict the now-playing image
+    /// or the focused-row preview. Downscaled to 96px, so the cap is kilobytes.
+    rows: HashMap<String, StatefulProtocol>,
+    row_order: VecDeque<String>,
+    row_in_flight: HashSet<String>,
+    row_failed: HashSet<String>,
 }
 
 impl ArtCache {
@@ -53,6 +61,11 @@ impl ArtCache {
     /// kilobytes rather than MiBs.
     pub const MAX_PREVIEWS: usize = 8;
 
+    /// Several screenfuls of two-line rows. Covers are downscaled to 96px, so
+    /// 128 entries stay in the low hundreds of kilobytes and scrolling back up
+    /// a list does not re-download every cover.
+    pub const MAX_ROWS: usize = 128;
+
     pub fn len(&self) -> usize {
         self.images.len()
     }
@@ -63,6 +76,10 @@ impl ArtCache {
 
     pub fn preview_len(&self) -> usize {
         self.previews.len()
+    }
+
+    pub fn row_len(&self) -> usize {
+        self.rows.len()
     }
 
     /// Enabled without probing the terminal. Halfblocks need no protocol
@@ -113,6 +130,10 @@ impl ArtCache {
             preview_order: VecDeque::new(),
             preview_in_flight: HashSet::new(),
             preview_failed: HashSet::new(),
+            rows: HashMap::new(),
+            row_order: VecDeque::new(),
+            row_in_flight: HashSet::new(),
+            row_failed: HashSet::new(),
         }
     }
 
@@ -126,6 +147,10 @@ impl ArtCache {
 
     pub fn get_preview(&self, url: &str) -> Option<&StatefulProtocol> {
         self.previews.get(url)
+    }
+
+    pub fn get_row(&self, url: &str) -> Option<&StatefulProtocol> {
+        self.rows.get(url)
     }
 
     /// True exactly once per URL, unless it later fails.
@@ -160,6 +185,37 @@ impl ArtCache {
     pub fn mark_preview_failed(&mut self, url: &str) {
         self.preview_in_flight.remove(url);
         self.preview_failed.insert(url.to_owned());
+    }
+
+    /// Mark a row cover as just drawn, so eviction drops the least recently
+    /// *seen* cover. Insertion-order eviction would drop the top of the list
+    /// while the user scrolls back up through it.
+    fn touch_row(&mut self, url: &str) {
+        if !self.rows.contains_key(url) {
+            return;
+        }
+        if let Some(pos) = self.row_order.iter().position(|u| u == url)
+            && let Some(entry) = self.row_order.remove(pos)
+        {
+            self.row_order.push_back(entry);
+        }
+    }
+
+    /// True exactly once per row-cover URL, unless it later fails.
+    pub fn should_fetch_row(&mut self, url: &str) -> bool {
+        if self.rows.contains_key(url)
+            || self.row_in_flight.contains(url)
+            || self.row_failed.contains(url)
+        {
+            return false;
+        }
+        self.row_in_flight.insert(url.to_owned());
+        true
+    }
+
+    pub fn mark_row_failed(&mut self, url: &str) {
+        self.row_in_flight.remove(url);
+        self.row_failed.insert(url.to_owned());
     }
 
     /// Build the protocol object for a decoded image. A disabled cache drops it —
@@ -210,6 +266,27 @@ impl ArtCache {
             }
         }
     }
+
+    /// Build the protocol object for a two-line row's cover. Downscaled to at
+    /// most 96px so a screenful is kilobytes. A disabled cache stores nothing.
+    /// Entries here never evict now-playing art or previews: the maps are
+    /// separate, which is the whole point of a fourth cache.
+    pub fn insert_row(&mut self, url: &str, image: image::DynamicImage) {
+        self.row_in_flight.remove(url);
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let downscaled = downscale_for_rows(image);
+        let proto = picker.new_resize_protocol(downscaled);
+        if self.rows.insert(url.to_owned(), proto).is_none() {
+            self.row_order.push_back(url.to_owned());
+        }
+        while self.row_order.len() > Self::MAX_ROWS {
+            if let Some(oldest) = self.row_order.pop_front() {
+                self.rows.remove(&oldest);
+            }
+        }
+    }
 }
 
 /// Draw the art for whatever is playing, or nothing at all. Takes `&mut ArtCache`
@@ -233,6 +310,30 @@ pub fn draw_preview(f: &mut Frame, area: Rect, url: Option<&str>, art: &mut ArtC
     }
     let Some(url) = url else { return };
     let Some(proto) = art.previews.get_mut(url) else {
+        return;
+    };
+    f.render_stateful_widget(StatefulImage::default(), area, proto);
+}
+
+/// A list-row cover is four columns wide, never 600px. Fitting it inside 96px
+/// keeps a screenful of covers down to kilobytes without visible blur.
+fn downscale_for_rows(image: image::DynamicImage) -> image::DynamicImage {
+    image.thumbnail(
+        crate::widgets::row::ROW_ART_PX,
+        crate::widgets::row::ROW_ART_PX,
+    )
+}
+
+/// Draw one list row's cover, or nothing at all. Deliberately bypasses
+/// [`should_draw`]: a 4x2 rect is below the panel minimum but is exactly the
+/// size a row cover is meant to be.
+pub fn draw_row(f: &mut Frame, area: Rect, url: Option<&str>, art: &mut ArtCache) {
+    if !art.is_enabled() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let Some(url) = url else { return };
+    art.touch_row(url);
+    let Some(proto) = art.rows.get_mut(url) else {
         return;
     };
     f.render_stateful_widget(StatefulImage::default(), area, proto);
@@ -412,5 +513,171 @@ mod tests {
             );
         }
         assert!(c4.get_preview("preview1").is_some());
+    }
+
+    fn big(n: u8) -> image::DynamicImage {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(200, 200, image::Rgb([n, n, n])))
+    }
+
+    /// A solid colour encodes to spaces in the halfblocks protocol (upper and
+    /// lower halves are identical), so painting tests need real variation.
+    fn gradient() -> image::DynamicImage {
+        let mut img = image::RgbImage::new(200, 200);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            *pixel = image::Rgb([x as u8, y as u8, (x + y) as u8]);
+        }
+        image::DynamicImage::ImageRgb8(img)
+    }
+
+    #[test]
+    fn the_row_cache_is_bounded_and_drops_the_oldest_cover() {
+        let mut c = ArtCache::for_test();
+        for i in 0..(ArtCache::MAX_ROWS + 5) {
+            c.insert_row(&format!("r{i}"), tiny(i as u8));
+        }
+        assert_eq!(c.row_len(), ArtCache::MAX_ROWS);
+        assert!(c.get_row("r0").is_none(), "the oldest cover is evicted");
+        assert!(
+            c.get_row(&format!("r{}", ArtCache::MAX_ROWS)).is_some(),
+            "the newest cover survives"
+        );
+    }
+
+    #[test]
+    fn a_row_insert_cannot_evict_now_playing_or_preview_art() {
+        let mut c = ArtCache::for_test();
+        for i in 0..ArtCache::MAX_IMAGES {
+            c.insert(&format!("np{i}"), tiny(i as u8));
+        }
+        for i in 0..ArtCache::MAX_PREVIEWS {
+            c.insert_preview(&format!("pv{i}"), tiny(i as u8));
+        }
+        for i in 0..(ArtCache::MAX_ROWS + 1) {
+            c.insert_row(&format!("r{i}"), tiny(i as u8));
+        }
+        assert_eq!(c.len(), ArtCache::MAX_IMAGES);
+        assert_eq!(c.preview_len(), ArtCache::MAX_PREVIEWS);
+        assert!(c.get("np0").is_some());
+        assert!(c.get_preview("pv0").is_some());
+        assert_eq!(c.row_len(), ArtCache::MAX_ROWS);
+    }
+
+    #[test]
+    fn row_fetches_are_requested_once_and_failures_are_not_retried() {
+        let mut c = ArtCache::disabled();
+        assert!(c.should_fetch_row("r1"), "first sighting fetches");
+        assert!(!c.should_fetch_row("r1"), "already in flight or cached");
+        c.mark_row_failed("r1");
+        assert!(
+            !c.should_fetch_row("r1"),
+            "a dead cover URL must not be retried every tick"
+        );
+    }
+
+    #[test]
+    fn a_disabled_row_cache_stores_nothing() {
+        let mut c = ArtCache::disabled();
+        c.insert_row("r1", tiny(1));
+        assert_eq!(c.row_len(), 0);
+        assert!(c.get_row("r1").is_none());
+    }
+
+    #[test]
+    fn draw_row_is_a_no_op_when_disabled_or_given_no_space() {
+        // The list calls it for every row with a URL; a tiny terminal can hand
+        // it a zero-width rect. Neither may panic or paint anything.
+        use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+        let mut c = ArtCache::for_test();
+        c.insert_row("r1", tiny(1));
+        let mut terminal = Terminal::new(TestBackend::new(4, 2)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(Paragraph::new("TEST"), area);
+                draw_row(f, area, Some("r1"), &mut ArtCache::disabled());
+                draw_row(f, Rect::new(0, 0, 0, 2), Some("r1"), &mut c);
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(text.trim_end(), "TEST");
+    }
+
+    #[test]
+    fn row_images_are_downscaled_to_at_most_ninety_six_pixels() {
+        let scaled = downscale_for_rows(big(5));
+        assert!(scaled.width() <= crate::widgets::row::ROW_ART_PX);
+        assert!(scaled.height() <= crate::widgets::row::ROW_ART_PX);
+    }
+
+    #[test]
+    fn a_row_cover_can_be_inserted_and_drawn_in_a_four_by_two_rect() {
+        let mut c = ArtCache::for_test();
+        c.insert_row("r1", gradient());
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(4, 2)).unwrap();
+        terminal
+            .draw(|f| draw_row(f, f.area(), Some("r1"), &mut c))
+            .unwrap();
+        let painted = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() != " ");
+        assert!(painted, "halfblocks must paint inside a 4x2 cover rect");
+    }
+
+    #[test]
+    fn drawing_a_missing_row_url_is_a_no_op() {
+        use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+        let mut c = ArtCache::for_test();
+        let mut terminal = Terminal::new(TestBackend::new(4, 2)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(Paragraph::new("TEST"), area);
+                draw_row(f, area, Some("missing"), &mut c);
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(
+            text.trim_end(),
+            "TEST",
+            "nothing may be painted for a missing URL"
+        );
+    }
+
+    #[test]
+    fn drawing_a_row_keeps_it_in_the_cache_for_the_scroll_back() {
+        let mut c = ArtCache::for_test();
+        for i in 0..ArtCache::MAX_ROWS {
+            c.insert_row(&format!("r{i}"), tiny(i as u8));
+        }
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(4, 2)).unwrap();
+        terminal
+            .draw(|f| draw_row(f, f.area(), Some("r0"), &mut c))
+            .unwrap();
+        c.insert_row("new", tiny(1));
+        assert!(
+            c.get_row("r0").is_some(),
+            "a just-drawn cover must survive eviction"
+        );
+        assert!(
+            c.get_row("r1").is_none(),
+            "the least recently drawn cover is the one to drop"
+        );
     }
 }

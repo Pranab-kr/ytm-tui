@@ -6,6 +6,7 @@ pub mod modal;
 pub mod nowplaying;
 pub mod playlists;
 pub mod queue;
+pub mod row;
 pub mod search;
 pub mod sidebar;
 pub mod toast;

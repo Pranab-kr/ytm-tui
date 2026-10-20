@@ -7,7 +7,9 @@ use crate::{
     keymap::KeyMap,
     theme::Theme,
     util::text::{display_width, truncate_to_width},
-    widgets::{art, help, modal, nowplaying, playlists, queue, search, sidebar, toast, tracklist},
+    widgets::{
+        art, help, modal, nowplaying, playlists, queue, row, search, sidebar, toast, tracklist,
+    },
 };
 use ratatui::{
     Frame,
@@ -91,9 +93,20 @@ pub fn click_target(
     }
     let top = list_top_for(search_row, filter_row, header_row);
     match row.checked_sub(top) {
-        Some(offset) => ClickTarget::Row(offset as usize),
-        // The heading row, and any query/filter/column-header rows above the list.
-        None => ClickTarget::Nothing,
+        // Rows are two lines tall: either line of an item selects that item.
+        // The list area is not necessarily an even number of lines, so a click
+        // on the leftover blank line below the last row must select nothing
+        // rather than a row just past the end.
+        Some(offset)
+            if usize::from(offset)
+                < list_rows_for(area, search_row, filter_row, header_row)
+                    * usize::from(row::HEIGHT) =>
+        {
+            ClickTarget::Row((offset / row::HEIGHT) as usize)
+        }
+        // The heading row, any query/filter/column-header rows above the list,
+        // and the blank line below the last row.
+        _ => ClickTarget::Nothing,
     }
 }
 
@@ -108,12 +121,16 @@ pub fn list_top_for(search_row: bool, filter_row: bool, header_row: bool) -> u16
 }
 
 pub fn list_rows_for(area: Rect, search_row: bool, filter_row: bool, header_row: bool) -> usize {
-    // Now-playing bar, then the pane heading inside the main area.
+    // Now-playing bar, then the pane heading inside the main area. The
+    // compatibility `header_row` flag still costs a line, but the two-line row
+    // replaced the separate column header. Return item slots, not text lines.
     let body = area.height.saturating_sub(NOWPLAYING_HEIGHT);
-    body.saturating_sub(1)
+    let lines = body
+        .saturating_sub(1)
         .saturating_sub(u16::from(search_row))
         .saturating_sub(u16::from(filter_row))
-        .saturating_sub(u16::from(header_row)) as usize
+        .saturating_sub(u16::from(header_row));
+    (lines / row::HEIGHT) as usize
 }
 
 /// The body area and the now-playing bar below it. Shared with the click handler:
@@ -217,21 +234,18 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::
     // Artists borrows the same field for `S`. Owning it in one place is what
     // keeps the layout, the click math, and `list_top_for` in agreement.
     let show_search = s.search_row_visible();
-    // A dim column header sits directly above the list on the track-shaped
-    // panes. It is the last row before the list, so its constraint follows the
-    // query and filter rows and `list_top_for` counts it the same way.
-    let show_header = s.column_header_visible();
+    // The two-line row is its own header, so there is no separate column-header
+    // row between the filter and the list any more.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(u16::from(show_search)),
             Constraint::Length(u16::from(show_filter)),
-            Constraint::Length(u16::from(show_header)),
             Constraint::Min(0),
         ])
         .split(area);
-    let (search_row, filter_row, header_row, list_row) = (rows[1], rows[2], rows[3], rows[4]);
+    let (search_row, filter_row, list_row) = (rows[1], rows[2], rows[3]);
 
     let (heading, badge) = heading_parts(s, w);
     let mut spans = vec![Span::styled(
@@ -256,25 +270,22 @@ fn draw_main(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::
     if show_filter {
         search::draw_filter(f, filter_row, s, t);
     }
-    if show_header {
-        tracklist::draw_column_header(f, header_row, t);
-    }
 
     match s.pane {
-        Pane::Home => playlists::draw_home(f, list_row, s, t),
+        Pane::Home => playlists::draw_home(f, list_row, s, t, art),
         // An open playlist shows its tracks; the list of playlists otherwise.
-        Pane::Playlists if s.open_playlist.is_some() => tracklist::draw(f, list_row, s, t),
-        Pane::Playlists => playlists::draw_playlists(f, list_row, s, t),
-        Pane::Songs => tracklist::draw(f, list_row, s, t),
-        Pane::Queue => queue::draw(f, list_row, s, t),
-        Pane::Search => draw_search(f, list_row, s, t),
+        Pane::Playlists if s.open_playlist.is_some() => tracklist::draw(f, list_row, s, t, art),
+        Pane::Playlists => playlists::draw_playlists(f, list_row, s, t, art),
+        Pane::Songs => tracklist::draw(f, list_row, s, t, art),
+        Pane::Queue => queue::draw(f, list_row, s, t, art),
+        Pane::Search => draw_search(f, list_row, s, t, art),
         // An open album shows its songs, like an open playlist does.
-        Pane::Albums if s.open_album.is_some() => tracklist::draw(f, list_row, s, t),
-        Pane::Albums => playlists::draw_albums(f, list_row, s, t),
+        Pane::Albums if s.open_album.is_some() => tracklist::draw(f, list_row, s, t, art),
+        Pane::Albums => playlists::draw_albums(f, list_row, s, t, art),
         // An open artist shows their tracks, like an open playlist does.
-        Pane::Artists if s.open_artist.is_some() => tracklist::draw(f, list_row, s, t),
-        Pane::Artists => playlists::draw_artists(f, list_row, s, t),
-        Pane::Downloads => tracklist::draw(f, list_row, s, t),
+        Pane::Artists if s.open_artist.is_some() => tracklist::draw(f, list_row, s, t, art),
+        Pane::Artists => playlists::draw_artists(f, list_row, s, t, art),
+        Pane::Downloads => tracklist::draw(f, list_row, s, t, art),
     }
 
     draw_preview_panel(f, list_row, s, t, art);
@@ -319,7 +330,7 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
     let (start, end) = tracklist::visible_window(
         s.selected,
         s.scroll_offset,
-        area.height as usize,
+        area.height as usize / row::HEIGHT as usize,
         total_rows,
     );
     if s.selected < start || s.selected >= end {
@@ -327,7 +338,7 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
     }
 
     let row_offset = (s.selected - start) as u16;
-    let row_y = area.y + row_offset;
+    let row_y = area.y + row_offset.saturating_mul(row::HEIGHT);
     let max_y = (area.y + area.height).saturating_sub(PREVIEW_HEIGHT);
     // Placement rules: top edge at the focused row, right-aligned inside the list area,
     // clamped to stay inside the list area. The only case where the caption is not on
@@ -390,7 +401,7 @@ fn draw_preview_panel(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &
 }
 
 /// The results below the query row, which `draw_main` has already drawn.
-fn draw_search(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+fn draw_search(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::ArtCache) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -399,7 +410,7 @@ fn draw_search(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
     if s.search_results.is_empty() && !s.search_query.trim().is_empty() {
         search::draw_no_matches(f, area, t);
     } else {
-        tracklist::draw(f, area, s, t);
+        tracklist::draw(f, area, s, t, art);
     }
 }
 
@@ -536,6 +547,43 @@ mod tests {
     }
 
     #[test]
+    fn the_two_line_row_is_its_own_header() {
+        // The old `Title / Artist / Time` row is gone; the artist and duration
+        // now live under the title in the same item.
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track {
+                title: "Roygbiv".into(),
+                artists: vec!["Boards of Canada".into()],
+                album: Some("Geogaddi".into()),
+                duration: ytm_core::TrackDuration::from_secs(149),
+                ..Track::stub("v1", "Roygbiv")
+            }],
+            ..Default::default()
+        };
+        let text = frame_text(&s, &mut ArtCache::disabled(), 80, 24);
+        assert!(!text.contains("Title"), "no separate header row remains");
+        assert!(!text.contains("Time"));
+        assert!(text.contains("Boards of Canada \u{2022} Geogaddi"));
+        assert!(text.contains("2:29"));
+        assert!(text.contains('\u{266a}'), "the cover gutter is present");
+    }
+
+    #[test]
+    fn tiny_terminal_sizes_never_panic_with_two_line_rows() {
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: (0..6)
+                .map(|i| Track::stub(&format!("v{i}"), &format!("Track {i}")))
+                .collect(),
+            ..Default::default()
+        };
+        for (w, h) in [(1u16, 1u16), (2, 2), (8, 4), (10, 6), (23, 7), (80, 7)] {
+            let _ = frame_text(&s, &mut ArtCache::for_test(), w, h);
+        }
+    }
+
+    #[test]
     fn the_art_panel_is_separated_from_the_list_by_a_gap() {
         // Without it the artwork's left edge sits flush against the duration
         // column, and the two read as one smeared block.
@@ -663,13 +711,14 @@ mod tests {
     fn the_viewport_row_count_excludes_the_chrome() {
         // Paging and `zz` are computed from this. If it counted the now-playing
         // bar or the heading, a half-page jump would overshoot the screen.
+        // Rows are two lines tall, so the count is item slots, not text lines.
         let area = Rect::new(0, 0, 80, 24);
-        // 24 - 5 (now playing: margin, rule, title, gap, progress) - 1 (heading) = 18
-        assert_eq!(list_rows_for(area, false, false, false), 18);
-        // The search pane also spends a row on the query line.
-        assert_eq!(list_rows_for(area, true, false, false), 17);
-        // A column header costs one more row of list.
-        assert_eq!(list_rows_for(area, false, false, true), 17);
+        // 24 - 5 (now playing) - 1 (heading) = 18 lines / 2 = 9 items.
+        assert_eq!(list_rows_for(area, false, false, false), 9);
+        // The search pane also spends a row on the query line: 17 / 2 = 8.
+        assert_eq!(list_rows_for(area, true, false, false), 8);
+        // The compatibility header flag still costs a line when a caller sets it.
+        assert_eq!(list_rows_for(area, false, false, true), 8);
     }
 
     #[test]
@@ -730,9 +779,10 @@ mod tests {
             click_target(area, 40, 1, false, false, false),
             ClickTarget::Row(0)
         );
+        // Rows are two lines tall: screen offsets 4 and 5 are item 2, not 4.
         assert_eq!(
             click_target(area, 40, 5, false, false, false),
-            ClickTarget::Row(4)
+            ClickTarget::Row(2)
         );
         // Search spends another row on the query line.
         assert_eq!(
@@ -744,6 +794,31 @@ mod tests {
         assert_eq!(
             click_target(area, 40, 3, true, false, true),
             ClickTarget::Row(0)
+        );
+    }
+
+    #[test]
+    fn clicking_either_line_of_a_row_selects_the_same_item() {
+        // The two-line layout is only usable if a click on the artist line does
+        // not land on the next track (or on a nonexistent one).
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            click_target(area, 40, 1, false, false, false),
+            ClickTarget::Row(0)
+        );
+        assert_eq!(
+            click_target(area, 40, 2, false, false, false),
+            ClickTarget::Row(0),
+            "the second line belongs to row 0"
+        );
+        assert_eq!(
+            click_target(area, 40, 3, false, false, false),
+            ClickTarget::Row(1)
+        );
+        assert_eq!(
+            click_target(area, 40, 4, false, false, false),
+            ClickTarget::Row(1),
+            "the second line belongs to row 1"
         );
     }
 
@@ -859,8 +934,8 @@ mod tests {
         );
 
         let panel_x = 100 - PREVIEW_WIDTH;
-        let list_top = list_top_for(false, false, true);
-        let expected_y = list_top + 1;
+        let list_top = list_top_for(false, false, false);
+        let expected_y = list_top + crate::widgets::row::HEIGHT; // selected item 1
         assert_eq!(buf[(panel_x, expected_y)].symbol(), "┌");
 
         // Regression test: the caption title must be rendered on the SAME buffer row as
@@ -966,7 +1041,7 @@ mod tests {
 
         let buf = t.backend().buffer();
         let panel_x = 100 - PREVIEW_WIDTH;
-        let list_top = list_top_for(false, false, true);
+        let list_top = list_top_for(false, false, false);
 
         // Top border corners and title row
         assert_eq!(
@@ -1314,9 +1389,11 @@ mod tests {
 
         let buf = t.backend().buffer();
         let panel_x = 100 - PREVIEW_WIDTH;
-        let list_top = list_top_for(false, false, true);
-        let list_rows = list_rows_for(Rect::new(0, 0, 100, 25), false, false, true);
-        let list_bottom = list_top + list_rows as u16;
+        let list_top = list_top_for(false, false, false);
+        let list_rows = list_rows_for(Rect::new(0, 0, 100, 25), false, false, false);
+        assert_eq!(list_rows, 9, "19 text lines fit nine two-line rows");
+        let (body, _) = body_and_nowplaying(Rect::new(0, 0, 100, 25));
+        let list_bottom = body.y + body.height;
 
         let panel_bottom = (list_top..25)
             .rev()
@@ -1333,6 +1410,11 @@ mod tests {
         assert!(
             panel_top >= list_top,
             "panel top ({panel_top}) must stay within list area (>= {list_top})"
+        );
+        assert_eq!(
+            panel_top,
+            list_top + 7,
+            "the panel is clamped to the bottom of the list, not the focused item's line"
         );
     }
 
@@ -1369,6 +1451,24 @@ mod tests {
             t1.backend().buffer(),
             t2.backend().buffer(),
             "A row with no thumbnail must draw nothing and be byte-identical to feature-absent"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_blank_line_below_the_last_row_selects_nothing() {
+        // With an odd number of list lines the last one belongs to no item.
+        // Mapping it by division would name a row one past the end.
+        let area = Rect::new(0, 0, 80, 23);
+        assert_eq!(list_rows_for(area, false, false, false), 8);
+        assert_eq!(
+            click_target(area, 40, 16, false, false, false),
+            ClickTarget::Row(7),
+            "the last real row is still clickable"
+        );
+        assert_eq!(
+            click_target(area, 40, 17, false, false, false),
+            ClickTarget::Nothing,
+            "the leftover line is not a row"
         );
     }
 }

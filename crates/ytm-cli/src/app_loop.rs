@@ -1329,11 +1329,20 @@ fn handle_click(
             pane_task(state.pane)
         }
         ClickTarget::Row(offset) => {
-            // The offset is from the top of the *visible window*, so the scroll
-            // position has to be added back or every click after scrolling would
-            // select a row near the top of the list.
-            let idx = state.scroll_offset + offset;
-            if idx < state.list_len() {
+            // The offset is from the top of the *visible window*, which is not
+            // `scroll_offset`: keyboard movement can carry the cursor past the
+            // viewport without the reducer updating it. Derive the start the
+            // same way the renderer does, or a click after scrolling selects a
+            // row other than the one under the pointer.
+            let len = state.list_len();
+            let (start, _) = ytm_tui::widgets::tracklist::visible_window(
+                state.selected,
+                state.scroll_offset,
+                state.viewport_rows.max(1),
+                len,
+            );
+            let idx = start + offset;
+            if idx < len {
                 state.selected = idx;
                 state.focus = ytm_tui::app::Focus::Main;
                 state.refresh_visual_marks();
@@ -1730,39 +1739,35 @@ pub async fn run(
                 }
                 // Art lives in the cache, not in state: protocol objects are
                 // not comparable or cloneable, so a pure reducer cannot hold them.
-                if let AppEvent::ArtFailed { url } = &ae {
-                    art.mark_failed(url);
-                }
-                if let AppEvent::ArtLoaded { url, image } = ae {
-                    art.insert(&url, *image);
-                    continue;
-                }
-                if let AppEvent::PreviewArtFailed { url } = &ae {
-                    art.mark_preview_failed(url);
-                }
-                if let AppEvent::PreviewArtLoaded { url, image } = ae {
-                    art.insert_preview(&url, *image);
-                    continue;
-                }
-                if let AppEvent::EnqueueTracks {
-                    tracks,
-                    play_next,
-                    toast,
-                } = ae
-                {
-                    state.loading = false;
-                    let cmd = if play_next {
-                        PlayerCommand::EnqueueNext(tracks)
-                    } else {
-                        PlayerCommand::EnqueueBack(tracks)
-                    };
-                    send(&player, cmd);
-                    if let Some(msg) = toast {
-                        state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
+                // These arms deliberately fall through to the draw at the bottom
+                // of the loop rather than `continue`ing: a `continue` skips that
+                // draw and leaves a just-arrived cover (or toast) unrendered
+                // until the next tick.
+                match ae {
+                    AppEvent::ArtFailed { url } => art.mark_failed(&url),
+                    AppEvent::ArtLoaded { url, image } => art.insert(&url, *image),
+                    AppEvent::PreviewArtFailed { url } => art.mark_preview_failed(&url),
+                    AppEvent::PreviewArtLoaded { url, image } => art.insert_preview(&url, *image),
+                    AppEvent::RowArtFailed { url } => art.mark_row_failed(&url),
+                    AppEvent::RowArtLoaded { url, image } => art.insert_row(&url, *image),
+                    AppEvent::EnqueueTracks {
+                        tracks,
+                        play_next,
+                        toast,
+                    } => {
+                        state.loading = false;
+                        let cmd = if play_next {
+                            PlayerCommand::EnqueueNext(tracks)
+                        } else {
+                            PlayerCommand::EnqueueBack(tracks)
+                        };
+                        send(&player, cmd);
+                        if let Some(msg) = toast {
+                            state.push_toast(ToastKind::Success, &msg, state.elapsed_ms);
+                        }
                     }
-                    continue;
+                    other => state.apply(other),
                 }
-                state.apply(ae);
             }
 
             // The source finishing its handshake. `pending_first_fetch` keeps this
@@ -1843,6 +1848,11 @@ pub async fn run(
                     && let Some(url) = preview_art_tick(&mut art, &state)
                 {
                     spawn_preview_art_fetch(url, app_tx.clone());
+                }
+                if art.is_enabled() {
+                    for url in row_art_tick(&mut art, &state) {
+                        spawn_row_art_fetch(url, app_tx.clone());
+                    }
                 }
             }
         }
@@ -2111,6 +2121,10 @@ pub fn spawn_cache_writer(cache: ytm_core::cache::Cache) -> std::sync::mpsc::Sen
     tx
 }
 
+/// Row covers fetched per tick. A screenful arrives over a few frames instead of
+/// one tick spawning twenty requests at once.
+const ROW_FETCH_PER_TICK: usize = 4;
+
 /// The URL to fetch art for, if any, exactly once per URL. From the tick arm, not
 /// `TrackChanged`, so a track whose art failed or that started before the picker
 /// finished probing still gets one attempt; `should_fetch` keeps that cheap.
@@ -2132,6 +2146,18 @@ fn preview_art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState)
     art.should_fetch_preview(&url).then_some(url)
 }
 
+/// Up to [`ROW_FETCH_PER_TICK`] row covers that are visible and not already
+/// cached, in flight, or failed. `should_fetch_row` marks each one in flight, so
+/// a second call in the same frame cannot return the same URL.
+fn row_art_tick(art: &mut ytm_tui::widgets::art::ArtCache, state: &AppState) -> Vec<String> {
+    state
+        .visible_row_thumbnails()
+        .into_iter()
+        .filter(|url| art.should_fetch_row(url))
+        .take(ROW_FETCH_PER_TICK)
+        .collect()
+}
+
 /// Fetch and decode one preview thumbnail off the UI thread (NFR-2).
 ///
 /// Every failure path posts `PreviewArtFailed`, stopping the URL from being retried.
@@ -2145,6 +2171,26 @@ fn spawn_preview_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
             Err(e) => {
                 tracing::debug!(url = %url, error = %e, "preview art unavailable");
                 AppEvent::PreviewArtFailed { url: url.clone() }
+            }
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// Fetch and decode one row cover off the UI thread (NFR-2).
+///
+/// Every failure path posts `RowArtFailed`, which is what stops the URL being
+/// retried on every tick. Covers are optional (FR-U5), so failures stay at debug.
+fn spawn_row_art_fetch(url: String, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let ev = match fetch_art(&url).await {
+            Ok(image) => AppEvent::RowArtLoaded {
+                url: url.clone(),
+                image: Box::new(image),
+            },
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "row cover unavailable");
+                AppEvent::RowArtFailed { url: url.clone() }
             }
         };
         let _ = tx.send(ev);
@@ -3945,6 +3991,107 @@ mod tests {
         );
     }
 
+    /// A songs pane whose first `n` rows each have a distinct cover URL.
+    fn rows_with_covers(n: usize) -> AppState {
+        AppState {
+            pane: Pane::Songs,
+            focus: Focus::Main,
+            tracks: (0..n)
+                .map(|i| ytm_core::Track {
+                    thumbnail_url: Some(format!("https://example.com/row{i}.jpg")),
+                    ..ytm_core::Track::stub(&format!("v{i}"), &format!("Track {i}"))
+                })
+                .collect(),
+            viewport_rows: n.max(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn row_art_tick_fetches_at_most_four_new_covers() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        let s = rows_with_covers(6);
+
+        let first = row_art_tick(&mut art, &s);
+        assert_eq!(
+            first.len(),
+            ROW_FETCH_PER_TICK,
+            "a tick may spawn at most four row fetches"
+        );
+        assert_eq!(first[0], "https://example.com/row0.jpg");
+        assert_eq!(first[3], "https://example.com/row3.jpg");
+
+        let second = row_art_tick(&mut art, &s);
+        assert_eq!(
+            second,
+            vec![
+                "https://example.com/row4.jpg",
+                "https://example.com/row5.jpg",
+            ],
+            "the rest arrive on later ticks, never all at once"
+        );
+    }
+
+    #[test]
+    fn row_art_tick_does_not_repeat_in_flight_urls() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        let s = rows_with_covers(2);
+
+        assert_eq!(row_art_tick(&mut art, &s).len(), 2);
+        assert!(
+            row_art_tick(&mut art, &s).is_empty(),
+            "an in-flight cover must not be fetched again"
+        );
+    }
+
+    #[test]
+    fn a_failed_row_cover_is_not_retried() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        let s = rows_with_covers(1);
+        let url = "https://example.com/row0.jpg";
+
+        assert_eq!(row_art_tick(&mut art, &s), vec![url]);
+        art.mark_row_failed(url);
+        assert!(
+            row_art_tick(&mut art, &s).is_empty(),
+            "a dead row cover must not be retried every tick"
+        );
+    }
+
+    #[test]
+    fn row_art_tick_requests_the_sized_cover_key() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![ytm_core::Track {
+                thumbnail_url: Some("https://example.com/a.jpg=w120-h120-l90-rj".into()),
+                ..ytm_core::Track::stub("v1", "Track")
+            }],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            row_art_tick(&mut art, &s),
+            vec!["https://example.com/a.jpg=w96-h96-l90-rj"],
+            "fetching a different size than the renderer draws would never paint"
+        );
+    }
+
+    #[test]
+    fn row_art_tick_is_empty_when_no_row_has_a_cover() {
+        let mut art = ytm_tui::widgets::art::ArtCache::disabled();
+        assert!(row_art_tick(&mut art, &AppState::default()).is_empty());
+
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![ytm_core::Track::stub("v1", "No cover")],
+            viewport_rows: 1,
+            ..Default::default()
+        };
+        assert!(row_art_tick(&mut art, &s).is_empty());
+    }
+
     #[test]
     fn right_on_a_playlist_opens_it_like_enter() {
         // The forward half of the h/l pair: `l` descends into a playlist, `h`
@@ -4874,5 +5021,37 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_click_after_keyboard_scrolling_selects_the_row_under_the_pointer() {
+        // `scroll_offset` is only a hint: moving the cursor below the viewport
+        // scrolls the renderer without the reducer writing a new offset. Click
+        // mapping must derive the same window the rows were drawn from.
+        let (_src, player) = deps();
+        let mut s = AppState {
+            pane: Pane::Songs,
+            tracks: (0..20)
+                .map(|i| ytm_core::Track::stub(&format!("v{i}"), &format!("Track {i}")))
+                .collect(),
+            selected: 10,
+            scroll_offset: 0,
+            viewport_rows: 5,
+            ..Default::default()
+        };
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+
+        // Screen row 1 is the first visible line, which is item 6 once the
+        // window has followed the cursor; screen row 2 is its second line.
+        assert!(handle_click(40, 1, area, &mut s, &*player).is_none());
+        assert_eq!(s.selected, 6, "row 1 under the pointer, not row 0");
+        assert_eq!(s.focus, Focus::Main);
+
+        // Reset: the first click moved the cursor, which can also move the
+        // window. Click the second line from the same starting state.
+        s.selected = 10;
+        s.scroll_offset = 0;
+        assert!(handle_click(40, 2, area, &mut s, &*player).is_none());
+        assert_eq!(s.selected, 6, "the artist line belongs to the same item");
     }
 }

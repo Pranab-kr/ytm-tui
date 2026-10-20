@@ -1,21 +1,13 @@
-//! One row per track: mark, title, artist, duration. Columns are sized by
-//! display width so CJK titles keep the grid intact (spec §6).
+//! Tracks as two-line rows: cover, title, then artist/album and duration.
+//! The shared layout lives in [`crate::widgets::row`], so this widget only
+//! decides what each row says.
 
-use crate::{app::AppState, theme::Theme, util::text::pad_to_width};
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+use crate::{
+    app::AppState,
+    theme::Theme,
+    widgets::{art, row},
 };
-
-/// Right-hand duration column, wide enough for `1:02:03`.
-const DURATION_WIDTH: usize = 7;
-/// The multi-select bullet plus its trailing space.
-const MARK_WIDTH: usize = 2;
-/// Title takes six tenths of what is left; the artist gets the rest.
-const TITLE_SHARE: usize = 6;
+use ratatui::{Frame, layout::Rect};
 
 /// The slice of rows to draw, keeping `selected` visible. Returns a half-open
 /// range; `offset` is the previous scroll position, used as a starting guess so
@@ -36,118 +28,44 @@ pub fn visible_window(selected: usize, offset: usize, height: usize, len: usize)
     (start.min(end), end)
 }
 
-/// A dim `Title / Artist / Time` header, aligned to the same columns the rows
-/// use so it labels the grid rather than floating over it. The widths come from
-/// the same constants `draw` uses — a second copy drifts off its columns.
-pub fn draw_column_header(f: &mut Frame, area: Rect, t: &Theme) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let w = area.width as usize;
-    let text_w = w.saturating_sub(DURATION_WIDTH + MARK_WIDTH);
-    let title_w = (text_w * TITLE_SHARE) / 10;
-    let artist_w = text_w.saturating_sub(title_w);
-
-    let style = Style::default().fg(t.fg_dim).add_modifier(Modifier::BOLD);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            // The mark gutter is empty in the header; the labels start at the
-            // title column so they line up with the row text below.
-            Span::styled(" ".repeat(MARK_WIDTH), style),
-            Span::styled(pad_to_width("Title", title_w), style),
-            Span::styled(pad_to_width("Artist", artist_w), style),
-            Span::styled(format!("{:>DURATION_WIDTH$}", "Time"), style),
-        ])),
-        area,
-    );
-}
-
-pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme) {
+pub fn draw(f: &mut Frame, area: Rect, s: &AppState, t: &Theme, art: &mut art::ArtCache) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
     let rows = s.visible_tracks();
+    row::draw_list(f, area, s, t, art, rows.len(), |idx| {
+        let Some(track) = rows.get(idx) else {
+            return row::Row::default();
+        };
+        let is_sel = idx == s.selected;
+        let is_now = s
+            .now_playing
+            .as_ref()
+            .is_some_and(|n| n.video_id == track.video_id);
+        let marked = s.marked.contains(&track.video_id);
+        let subtitle = match track.album.as_deref().filter(|a| !a.is_empty()) {
+            Some(album) => format!("{} \u{2022} {album}", track.artist_display()),
+            None => track.artist_display(),
+        };
 
-    if rows.is_empty() {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                s.empty_message(),
-                Style::default().fg(t.fg_dim),
-            )),
-            area,
-        );
-        return;
-    }
-
-    let h = area.height as usize;
-    let (start, end) = visible_window(s.selected, s.scroll_offset, h, rows.len());
-    let w = area.width as usize;
-
-    // Columns in display cells, not bytes: mark + title + artist + duration.
-    let text_w = w.saturating_sub(DURATION_WIDTH + MARK_WIDTH);
-    let title_w = (text_w * TITLE_SHARE) / 10;
-    let artist_w = text_w.saturating_sub(title_w);
-
-    let slice = rows.get(start..end).unwrap_or(&rows[..0]);
-    let items: Vec<ListItem> = slice
-        .iter()
-        .enumerate()
-        .map(|(i, track)| {
-            let idx = start + i;
-            let is_sel = idx == s.selected;
-            let is_now = s
-                .now_playing
-                .as_ref()
-                .is_some_and(|n| n.video_id == track.video_id);
-            let marked = s.marked.contains(&track.video_id);
-
-            let base = if is_now {
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        row::Row {
+            title: track.title.clone(),
+            subtitle,
+            right: track.duration.to_string(),
+            thumbnail: track.thumbnail_url.clone(),
+            marker: if marked {
+                "\u{2022} ".to_owned()
             } else {
-                Style::default().fg(t.fg)
-            };
-            // Selection and marked rows receive a reversed background tint (spec §6, FR-FIX2).
-            let style = if is_sel || marked {
-                base.bg(t.bg_sel)
-            } else {
-                base
-            };
-            let dim = if is_sel || marked {
-                style
-            } else {
-                Style::default().fg(t.fg_dim)
-            };
-
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    if marked { "\u{2022} " } else { "  " },
-                    if is_sel || marked {
-                        Style::default().fg(t.accent).bg(t.bg_sel)
-                    } else {
-                        Style::default().fg(t.accent)
-                    },
-                ),
-                Span::styled(pad_to_width(&track.title, title_w), style),
-                Span::styled(pad_to_width(&track.artist_display(), artist_w), dim),
-                Span::styled(
-                    format!(
-                        "{:>width$}",
-                        track.duration.to_string(),
-                        width = DURATION_WIDTH
-                    ),
-                    dim,
-                ),
-            ]))
-            .style(if is_sel || marked {
-                Style::default().bg(t.bg_sel)
-            } else {
-                Style::default()
-            })
-        })
-        .collect();
-
-    f.render_widget(List::new(items), area);
+                String::new()
+            },
+            accent: is_now,
+            // `draw_list` paints both lines for a marked row; the closure also
+            // includes selection so a selected unmarked row is highlighted.
+            marked: is_sel || marked,
+            heading: false,
+        }
+    });
 }
 
 #[cfg(test)]
@@ -244,7 +162,48 @@ mod tests {
     }
 
     #[test]
-    fn a_populated_track_pane_draws_a_column_header() {
+    fn the_second_line_holds_artist_album_and_duration() {
+        use crate::app::{AppState, Pane};
+        use ytm_core::{Track, TrackDuration};
+
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track {
+                title: "Roygbiv".into(),
+                artists: vec!["Boards of Canada".into()],
+                album: Some("Geogaddi".into()),
+                duration: TrackDuration::from_secs(149),
+                ..Track::stub("v1", "Roygbiv")
+            }],
+            ..Default::default()
+        };
+
+        let text = buffer_text(&s);
+        assert!(
+            text.contains("Boards of Canada \u{2022} Geogaddi"),
+            "artist and album share the second line, got: {text}"
+        );
+        assert!(text.contains("2:29"), "duration is beside the artist");
+    }
+
+    #[test]
+    fn track_rows_start_with_a_cover_gutter() {
+        use crate::app::{AppState, Pane};
+        use ytm_core::Track;
+
+        let s = AppState {
+            pane: Pane::Songs,
+            tracks: vec![Track::stub("v1", "Roygbiv")],
+            ..Default::default()
+        };
+        assert!(
+            buffer_text(&s).contains('\u{266a}'),
+            "a missing cover must keep the gutter visible"
+        );
+    }
+
+    #[test]
+    fn the_two_line_row_replaced_the_column_header() {
         use crate::app::{AppState, Pane};
         use ytm_core::Track;
         let s = AppState {
@@ -253,22 +212,10 @@ mod tests {
             ..Default::default()
         };
         let text = buffer_text(&s);
-        assert!(text.contains("Title"), "header labels the title column");
-        assert!(text.contains("Artist"), "header labels the artist column");
-        assert!(text.contains("Time"), "header labels the duration column");
-        // The row still renders below the header.
+        assert!(!text.contains("Title"), "no separate header labels remain");
+        assert!(!text.contains("Time"));
+        // The row still renders.
         assert!(text.contains("Roygbiv"));
-    }
-
-    #[test]
-    fn an_empty_track_pane_has_no_column_header() {
-        // A header over "No liked songs yet" would label an empty grid.
-        use crate::app::{AppState, Pane};
-        let s = AppState {
-            pane: Pane::Songs,
-            ..Default::default()
-        };
-        assert!(!buffer_text(&s).contains("Title"));
     }
 
     #[test]
@@ -304,7 +251,15 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw(f, f.area(), &state, &theme))
+            .draw(|f| {
+                draw(
+                    f,
+                    f.area(),
+                    &state,
+                    &theme,
+                    &mut crate::widgets::art::ArtCache::disabled(),
+                )
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -312,5 +267,10 @@ mod tests {
         assert!(rendered.contains('•'));
         let cell = buffer.cell((0, 0)).unwrap();
         assert_eq!(cell.bg, theme.bg_sel);
+        assert_eq!(
+            buffer.cell((0, 1)).unwrap().bg,
+            theme.bg_sel,
+            "the marked background covers the row's second line too"
+        );
     }
 }
