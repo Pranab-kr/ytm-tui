@@ -62,8 +62,6 @@ pub enum InputAction {
     ToggleVisual,
     /// Cycle to the next built-in theme.
     CycleTheme,
-    /// Flip the floating focus-thumbnail preview panel on/off.
-    TogglePreview,
     /// Open config.toml in $EDITOR, reloading keys and theme on exit.
     EditConfig,
     /// Download track(s) for offline listening.
@@ -138,16 +136,6 @@ pub enum AppEvent {
     /// Art could not be fetched or decoded. Not shown to the user: FR-U5 makes
     /// art optional, and a toast per missing thumbnail would be noise.
     ArtFailed {
-        url: String,
-    },
-
-    /// Preview thumbnail bytes arrived and decoded for the focused row.
-    PreviewArtLoaded {
-        url: String,
-        image: Box<image::DynamicImage>,
-    },
-    /// Preview thumbnail could not be fetched or decoded.
-    PreviewArtFailed {
         url: String,
     },
 

@@ -11,7 +11,6 @@ Browse your Home feed, playlists, liked songs (Fav), albums and artists, search 
 - Vim and arrow navigation: `j`/`k` or arrows, `g`/`G`, Ctrl+d/u, visual range selection (`V`), and `1`–`8` to switch tabs.
 - Full queue control: reorder, play next, append with `a`, and clear.
 - Album art in graphics-capable terminals (Kitty, Sixel, iTerm2) plus six themes: tokyonight, gruvbox, nord, dracula, dawn, paper.
-- A Focus Thumbnail Preview panel floats beside the selected track, showing album art and metadata after the cursor rests.
 - Media keys and MPRIS desktop integration.
 - Guest mode with no account, or sign in with cookies to reach your personal library.
 
@@ -169,7 +168,6 @@ the `/` filter is local and only sees titles and artists already on screen.
 | Key | Action |
 |---|---|
 | `t` | Cycle color themes |
-| `P` | Toggle the focus preview panel |
 | `,` | Open the configuration file |
 | `?` | Show the help overlay |
 

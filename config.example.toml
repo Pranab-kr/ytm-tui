@@ -118,7 +118,6 @@ prefetch_count = 2    # number of queue tracks to prefetch ahead
 # page_down = "d"        # also Ctrl+D / PageDown
 # page_up = "u"          # also Ctrl+U / PageUp
 # cycle_theme = "t"
-# toggle_preview = "P"  # floating focus-thumbnail preview panel
 # edit_config = ","
 
 # Not remappable, listed so they are discoverable:

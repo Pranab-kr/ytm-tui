@@ -72,7 +72,6 @@ fn action_label(a: &InputAction) -> Option<&'static str> {
         A::ToggleMark => "mark row",
         A::ToggleVisual => "visual select",
         A::CycleTheme => "next theme",
-        A::TogglePreview => "preview panel",
         A::EditConfig => "edit config",
         A::Download => "download track",
         // Not bindings a user presses on purpose.
@@ -263,15 +262,6 @@ mod tests {
         for action in ["quit", "pause", "search", "queue"] {
             assert!(text.contains(action), "missing action {action:?}");
         }
-    }
-
-    #[test]
-    fn help_overlay_shows_the_preview_panel_label() {
-        let text = text_of(&help_open());
-        assert!(
-            text.contains("preview panel"),
-            "help overlay must name the new toggle"
-        );
     }
 
     #[test]
