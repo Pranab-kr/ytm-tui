@@ -11,11 +11,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Hard upper bound on the cache directory. 1 GiB is roughly a few thousand
-/// covers, far more than a session can look at, and small enough to be a
-/// rounding error on a modern disk.
-pub const MAX_DISK_BYTES: u64 = 1024 * 1024 * 1024;
-
 #[derive(Clone)]
 pub struct DiskArtCache {
     state: Arc<Mutex<State>>,
@@ -32,10 +27,6 @@ struct State {
 }
 
 impl DiskArtCache {
-    pub fn new(dir: PathBuf) -> Self {
-        Self::with_limit(dir, MAX_DISK_BYTES)
-    }
-
     pub fn with_limit(dir: PathBuf, max_bytes: u64) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -301,25 +292,24 @@ mod tests {
             .expect("set the cached file's mtime");
     }
 
-    #[test]
-    fn the_default_cap_is_one_gib() {
-        assert_eq!(MAX_DISK_BYTES, 1 << 30);
-        let dir = TempDir::new("default-cap");
-        let cache = DiskArtCache::new(dir.path());
-        assert_eq!(cache.state.lock().unwrap().max_bytes, 1 << 30);
+    /// The shipped default, so the tests exercise the same cap a user gets.
+    const TEST_CAP: u64 = 128 * 1024 * 1024;
+
+    fn default_cache(dir: &TempDir) -> DiskArtCache {
+        DiskArtCache::with_limit(dir.path(), TEST_CAP)
     }
 
     #[test]
     fn a_missing_url_is_a_miss_not_an_error() {
         let dir = TempDir::new("miss");
-        let cache = DiskArtCache::new(dir.path());
+        let cache = default_cache(&dir);
         assert!(cache.get("https://example.com/missing.jpg").is_none());
     }
 
     #[test]
     fn put_then_get_round_trips_the_exact_bytes() {
         let dir = TempDir::new("round-trip");
-        let cache = DiskArtCache::new(dir.path());
+        let cache = default_cache(&dir);
         let bytes = b"\x89PNG\r\n\x1a\nnot really a png";
         cache.put("https://example.com/a.jpg", bytes).unwrap();
         assert_eq!(cache.get("https://example.com/a.jpg").unwrap(), bytes);
@@ -368,7 +358,7 @@ mod tests {
     #[test]
     fn different_urls_get_different_files() {
         let dir = TempDir::new("distinct");
-        let cache = DiskArtCache::new(dir.path());
+        let cache = default_cache(&dir);
         cache.put("https://example.com/a.jpg", b"a").unwrap();
         cache.put("https://example.com/b.jpg", b"b").unwrap();
 
@@ -381,12 +371,12 @@ mod tests {
     fn a_reopened_cache_still_serves_the_bytes_from_disk() {
         let dir = TempDir::new("reopen");
         {
-            let cache = DiskArtCache::new(dir.path());
+            let cache = default_cache(&dir);
             cache
                 .put("https://example.com/a.jpg", b"cover bytes")
                 .unwrap();
         }
-        let reopened = DiskArtCache::new(dir.path());
+        let reopened = default_cache(&dir);
         assert_eq!(
             reopened.get("https://example.com/a.jpg").unwrap(),
             b"cover bytes",
@@ -429,7 +419,7 @@ mod tests {
         )
         .unwrap();
 
-        let cache = DiskArtCache::new(dir.path());
+        let cache = default_cache(&dir);
         assert!(cache.get("anything").is_none());
         assert!(
             !dir.path().join("leftover.tmp").exists(),
@@ -443,7 +433,7 @@ mod tests {
     #[test]
     fn remove_deletes_the_file_and_turns_the_next_get_into_a_miss() {
         let dir = TempDir::new("remove");
-        let cache = DiskArtCache::new(dir.path());
+        let cache = default_cache(&dir);
         cache.put("u", b"bytes").unwrap();
         assert!(cache.get("u").is_some());
 

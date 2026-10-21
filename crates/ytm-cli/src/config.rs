@@ -183,6 +183,7 @@ impl Default for BehaviourConfig {
 pub struct StorageConfig {
     pub download_dir: Option<PathBuf>,
     pub cache_size_mb: u64,
+    pub art_cache_size_mb: u64,
     pub prefetch_count: usize,
 }
 
@@ -191,6 +192,7 @@ impl Default for StorageConfig {
         Self {
             download_dir: None,
             cache_size_mb: 1024,
+            art_cache_size_mb: 128,
             prefetch_count: 2,
         }
     }
@@ -595,10 +597,12 @@ theme = "gruvbox""#,
             [storage]
             download_dir = "~/Music/offline"
             cache_size_mb = 2048
+            art_cache_size_mb = 64
             prefetch_count = 3
         "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         assert_eq!(cfg.storage.cache_size_mb, 2048);
+        assert_eq!(cfg.storage.art_cache_size_mb, 64);
         assert_eq!(cfg.storage.prefetch_count, 3);
         assert_eq!(
             cfg.storage.download_dir,
@@ -610,6 +614,7 @@ theme = "gruvbox""#,
     fn storage_config_defaults_are_sensible() {
         let cfg = Config::default();
         assert_eq!(cfg.storage.cache_size_mb, 1024);
+        assert_eq!(cfg.storage.art_cache_size_mb, 128);
         assert_eq!(cfg.storage.prefetch_count, 2);
     }
 

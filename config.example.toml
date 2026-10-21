@@ -73,8 +73,9 @@ confirm_on_quit = false
 # Directory where permanently downloaded songs are kept.
 # Tilde expansion (~/...) is supported.
 # download_dir = "~/Music/ytm"
-cache_size_mb = 1024  # max MB for lookahead cache
-prefetch_count = 2    # number of queue tracks to prefetch ahead
+cache_size_mb = 1024      # max MB for lookahead cache
+art_cache_size_mb = 128   # max MB for the persistent cover-art cache
+prefetch_count = 2        # number of queue tracks to prefetch ahead
 
 # Rebind any action to a single character. Action names are the snake_case forms
 # below; a binding is exclusive, so setting one clears that action's default.

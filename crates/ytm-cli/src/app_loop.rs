@@ -4114,7 +4114,7 @@ mod tests {
                 .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let cache = DiskArtCache::new(dir.clone());
+        let cache = DiskArtCache::with_limit(dir.clone(), 128 * 1024 * 1024);
 
         let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
             2,

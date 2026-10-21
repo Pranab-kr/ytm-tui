@@ -739,7 +739,10 @@ async fn run_tui(cfg: config::Config) -> color_eyre::Result<()> {
     // Persistent cover storage. Cheap to construct: the directory is created on
     // the first write and indexed lazily on the first read, so a launch with
     // album art disabled pays nothing.
-    let disk_art = art_disk::DiskArtCache::new(config::paths::cache_dir().join("art"));
+    let disk_art = art_disk::DiskArtCache::with_limit(
+        config::paths::cache_dir().join("art"),
+        cfg.storage.art_cache_size_mb * 1024 * 1024,
+    );
     let result = app_loop::run(
         &mut guard.terminal,
         state,
