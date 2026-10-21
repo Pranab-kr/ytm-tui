@@ -49,7 +49,7 @@ Browse Home, playlists, liked songs, albums and artists. Search tracks, manage t
 Downloading a release is quicker than building from source.
 
 1. Open the [Releases](https://github.com/Pranab-kr/ytm-tui/releases) page.
-2. Download the archive for your platform, for example `ytm-tui-v0.2.2-x86_64-linux.tar.gz`.
+2. Download the archive for your platform, for example `ytm-tui-v0.3.0-x86_64-linux.tar.gz`.
 3. Extract it and put `ytm-tui` on your PATH:
     ```bash
     tar -xzf ytm-tui-*.tar.gz
