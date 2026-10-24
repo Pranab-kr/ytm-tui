@@ -4999,7 +4999,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ytm-cli"
+name = "ytm-app"
 version = "0.3.0"
 dependencies = [
  "clap",

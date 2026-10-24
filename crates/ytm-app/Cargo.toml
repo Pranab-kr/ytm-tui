@@ -1,5 +1,5 @@
 [package]
-name = "ytm-cli"
+name = "ytm-app"
 version = "0.3.0"
 default-run = "ytm-tui"
 edition.workspace = true

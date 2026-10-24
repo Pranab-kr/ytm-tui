@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION=$(grep -m1 '^version' crates/ytm-cli/Cargo.toml | cut -d'"' -f2)
+VERSION=$(grep -m1 '^version' crates/ytm-app/Cargo.toml | cut -d'"' -f2)
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 NAME="ytm-tui-v${VERSION}-${ARCH}-${OS}"
