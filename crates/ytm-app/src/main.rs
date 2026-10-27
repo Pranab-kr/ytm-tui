@@ -149,11 +149,11 @@ fn apply_startup_shuffle(player: &impl ytm_player::player::Player, shuffle: bool
     }
 }
 
-/// `ytm` with no subcommand launches the TUI; the subcommands are the
+/// `ytm-tui` with no subcommand launches the TUI; the subcommands are the
 /// non-interactive paths, which is what makes auth debuggable without a
 /// terminal UI in the way.
 #[derive(Debug, clap::Parser)]
-#[command(name = "ytm", about = "YouTube Music in your terminal", version)]
+#[command(name = "ytm-tui", about = "YouTube Music in your terminal", version)]
 pub struct Cli {
     /// Path to config.toml (defaults to the platform config dir)
     #[arg(long, global = true)]
@@ -845,6 +845,20 @@ mod tests {
         let mut cfg = config::Config::default();
         cfg.auth.cookie_file = Some("/nonexistent/ytm-tui/cookies.txt".into());
         assert!(guest_startup(&cfg));
+    }
+
+    #[test]
+    fn version_output_names_the_binary_users_actually_run() {
+        // The binary on PATH is `ytm-tui`. Printing a different name sends
+        // people looking for a command that does not exist, and makes issue
+        // reports say "ytm 0.3.0" for something called ytm-tui.
+        use clap::CommandFactory;
+
+        let rendered = Cli::command().render_version();
+        assert!(
+            rendered.starts_with("ytm-tui "),
+            "expected `ytm-tui <version>`, got {rendered:?}"
+        );
     }
 
     #[test]

@@ -49,8 +49,8 @@ Browse Home, playlists, liked songs, albums and artists. Search tracks, manage t
 Every release ships a pacman package, so pacman owns the files and can remove them again:
 
 ```bash
-curl -fLO https://github.com/Pranab-kr/ytm-tui/releases/download/v0.3.0/ytm-tui-bin-0.3.0-1-x86_64.pkg.tar.zst
-sudo pacman -U ytm-tui-bin-0.3.0-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/Pranab-kr/ytm-tui/releases/download/v0.3.1/ytm-tui-bin-0.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ytm-tui-bin-0.3.1-1-x86_64.pkg.tar.zst
 ```
 
 Adjust the version for the release you want, or download the `.pkg.tar.zst` from the [Releases](https://github.com/Pranab-kr/ytm-tui/releases) page and run `sudo pacman -U ytm-tui-bin-*.pkg.tar.zst`. `mpv` and `yt-dlp` are installed automatically as dependencies.
@@ -62,7 +62,7 @@ The package is not on the AUR yet: `ytm-tui-bin` will be published there as soon
 For every other distribution, downloading a release is quicker than building from source.
 
 1. Open the [Releases](https://github.com/Pranab-kr/ytm-tui/releases) page.
-2. Download the archive for your platform, for example `ytm-tui-v0.3.0-x86_64-linux.tar.gz`.
+2. Download the archive for your platform, for example `ytm-tui-v0.3.1-x86_64-linux.tar.gz`.
 3. Extract it and put `ytm-tui` on your PATH:
     ```bash
     tar -xzf ytm-tui-*.tar.gz
