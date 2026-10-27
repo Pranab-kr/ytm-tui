@@ -61,7 +61,7 @@ ROOT="$PWD"
 (cd packaging/aur &&
   PACKAGER="Pranab-kr <pranabm406@gmail.com>" \
   PKGDEST="${ROOT}/dist" SRCDEST="${ROOT}/dist" \
-  makepkg -f --noconfirm)
+  makepkg -f -C --noconfirm)
 PKG="ytm-tui-bin-${VERSION}-1-x86_64.pkg.tar.zst"
 (cd dist && sha256sum "$PKG" > "${PKG}.sha256")
 

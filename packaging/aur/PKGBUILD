@@ -15,13 +15,13 @@ license=('MIT')
 depends=('mpv' 'yt-dlp')
 provides=('ytm-tui')
 conflicts=('ytm-tui')
-source=("${url}/releases/download/v${pkgver}/ytm-tui-v${pkgver}-x86_64-linux.tar.gz"
+source=("${url}/releases/download/v${pkgver}/ytm-tui-v${pkgver}-${CARCH}-linux.tar.gz"
         'LICENSE')
 sha256sums=('830b714289ad96ad591eb7897bfb8ea4adac55cdbacee1dc1d9dd03d92c07415'
             '3c8b2b3792a5e3bee94b2b58185affdb1aae52ad76e71a0efa76110918cf409b')
 
 package() {
-  local dir="ytm-tui-v${pkgver}-x86_64-linux"
+  local dir="ytm-tui-v${pkgver}-${CARCH}-linux"
 
   install -Dm755 "${dir}/ytm-tui" "${pkgdir}/usr/bin/ytm-tui"
   install -Dm644 "${dir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
