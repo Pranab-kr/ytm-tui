@@ -6,7 +6,7 @@
 # pkgver and sha256sums in step with it.
 
 pkgname=ytm-tui-bin
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Terminal client for YouTube Music'
 arch=('x86_64')
@@ -17,7 +17,7 @@ provides=('ytm-tui')
 conflicts=('ytm-tui')
 source=("${url}/releases/download/v${pkgver}/ytm-tui-v${pkgver}-x86_64-linux.tar.gz"
         'LICENSE')
-sha256sums=('4e0d1590b9e63c90997cad814201ad4547e552f206d0ee5dbc279dc212aafbd9'
+sha256sums=('830b714289ad96ad591eb7897bfb8ea4adac55cdbacee1dc1d9dd03d92c07415'
             '3c8b2b3792a5e3bee94b2b58185affdb1aae52ad76e71a0efa76110918cf409b')
 
 package() {
