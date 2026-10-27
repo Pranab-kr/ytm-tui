@@ -193,6 +193,8 @@ If the file does not exist, the command writes an example `config.toml` with eve
 
 The generated file documents every option: the startup tab, volume and seek steps, mouse support, vim keys, themes, colors and key rebinding.
 
+Coming from `v0.1.x`? That release read `~/.config/ytm-cli`. Move it once with `mv ~/.config/ytm-cli ~/.config/ytm-tui`, otherwise the app starts signed out.
+
 ## Terms of service and privacy
 
 `ytm-tui` uses YouTube Music's internal web API and `yt-dlp` for streaming. Use it for personal or educational purposes. The app sends no telemetry and collects no data. Tokens, cookies, cache and downloads stay on your machine.
