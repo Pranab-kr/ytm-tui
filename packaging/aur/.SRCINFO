@@ -1,0 +1,17 @@
+pkgbase = ytm-tui-bin
+	pkgdesc = Terminal client for YouTube Music
+	pkgver = 0.3.0
+	pkgrel = 1
+	url = https://github.com/Pranab-kr/ytm-tui
+	arch = x86_64
+	license = MIT
+	depends = mpv
+	depends = yt-dlp
+	provides = ytm-tui
+	conflicts = ytm-tui
+	source = https://github.com/Pranab-kr/ytm-tui/releases/download/v0.3.0/ytm-tui-v0.3.0-x86_64-linux.tar.gz
+	source = LICENSE
+	sha256sums = 4e0d1590b9e63c90997cad814201ad4547e552f206d0ee5dbc279dc212aafbd9
+	sha256sums = 3c8b2b3792a5e3bee94b2b58185affdb1aae52ad76e71a0efa76110918cf409b
+
+pkgname = ytm-tui-bin

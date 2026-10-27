@@ -1,4 +1,6 @@
 /target
+/packaging/aur/src/
+/packaging/aur/pkg/
 *.log
 /logs
 .env

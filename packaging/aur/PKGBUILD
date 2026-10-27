@@ -1,0 +1,31 @@
+# Maintainer: Pranab-kr <pranabm406@gmail.com>
+
+# Repackages the GitHub release tarball. Building from source is not the point
+# of this package: see the README for the from-source route. The version here
+# must match the tag of the release being packaged; scripts/aur-sync.sh keeps
+# pkgver and sha256sums in step with it.
+
+pkgname=ytm-tui-bin
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Terminal client for YouTube Music'
+arch=('x86_64')
+url='https://github.com/Pranab-kr/ytm-tui'
+license=('MIT')
+depends=('mpv' 'yt-dlp')
+provides=('ytm-tui')
+conflicts=('ytm-tui')
+source=("${url}/releases/download/v${pkgver}/ytm-tui-v${pkgver}-x86_64-linux.tar.gz"
+        'LICENSE')
+sha256sums=('4e0d1590b9e63c90997cad814201ad4547e552f206d0ee5dbc279dc212aafbd9'
+            '3c8b2b3792a5e3bee94b2b58185affdb1aae52ad76e71a0efa76110918cf409b')
+
+package() {
+  local dir="ytm-tui-v${pkgver}-x86_64-linux"
+
+  install -Dm755 "${dir}/ytm-tui" "${pkgdir}/usr/bin/ytm-tui"
+  install -Dm644 "${dir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 "${dir}/config.example.toml" \
+    "${pkgdir}/usr/share/doc/${pkgname}/config.example.toml"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
