@@ -5,6 +5,7 @@ use crate::{mapping, model::*, source::*};
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::{AuthToken, BrowserToken, LoggedIn};
+use ytmapi_rs::builder::YtMusicBuilder;
 use ytmapi_rs::common::{ApiOutcome, YoutubeID};
 use ytmapi_rs::parse::SearchResultPlaylist;
 use ytmapi_rs::query::playlist::PrivacyStatus;
@@ -18,9 +19,29 @@ pub struct YtMusicSource<A: AuthToken> {
     api: YtMusic<A>,
 }
 
+/// Build an HTTP client for `ytmapi_rs` with raised HTTP/2 header limits.
+/// YouTube Music's edge proxies return very large response headers (>16 KB)
+/// containing extensive connection-allowlist and CSP policies on music.youtube.com.
+/// The `h2` crate defaults to a 16 KB `max_header_list_size`, which causes a
+/// `REQUEST_HEADER_FIELDS_TOO_LARGE` stream error (`PROTOCOL_ERROR` reset) if left at default.
+fn build_http_client() -> Result<ytmapi_rs::client::Client, SourceError> {
+    let reqwest_client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .http2_max_header_list_size(512 * 1024)
+        .build()
+        .map_err(|e| SourceError::Network(e.to_string()))?;
+    Ok(ytmapi_rs::client::Client::new_from_reqwest_client(
+        reqwest_client,
+    ))
+}
+
 impl YtMusicSource<NoAuthToken> {
     pub async fn unauthenticated() -> Result<Self, SourceError> {
-        let api = YtMusic::new_unauthenticated().await.map_err(classify)?;
+        let client = build_http_client()?;
+        let api = YtMusicBuilder::new_with_client(client)
+            .build()
+            .await
+            .map_err(classify)?;
         Ok(Self { api })
     }
 }
@@ -28,7 +49,12 @@ impl YtMusicSource<NoAuthToken> {
 impl YtMusicSource<BrowserToken> {
     /// Cookie fallback (FR-A5).
     pub async fn from_cookie_file(path: impl AsRef<std::path::Path>) -> Result<Self, SourceError> {
-        let api = YtMusic::from_cookie_file(path).await.map_err(classify)?;
+        let client = build_http_client()?;
+        let api = YtMusicBuilder::new_with_client(client)
+            .with_browser_token_cookie_file(path)
+            .build()
+            .await
+            .map_err(classify)?;
         Ok(Self { api })
     }
 }
@@ -780,6 +806,11 @@ impl MusicSource for YtMusicSource<NoAuthToken> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_http_client_builds_successfully() {
+        assert!(build_http_client().is_ok());
+    }
 
     fn tracks(n: usize, art: bool) -> Vec<Track> {
         (0..n)

@@ -5028,6 +5028,7 @@ name = "ytm-core"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
